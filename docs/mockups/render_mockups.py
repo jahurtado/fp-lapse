@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Render UI mockups at 320x240 (native TFT resolution).
+
+Run from the repo root:
+    .venv/bin/python docs/mockups/render_mockups.py
+
+Outputs PNGs into docs/mockups/ alongside this script. Re-run after any
+edit to keep the documented design in sync with the spec.
+
+Status: las pantallas portadas a `fp_lapse.ui` se renderizan llamando al
+código productivo (fuente única de verdad). Las que aún no — overlay y
+manage_menu — siguen con las primitivas locales hasta que se porten.
+"""
+
+import sys
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+# Permite importar `fp_lapse` desde `src/` sin instalar el paquete.
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parents[1] / "src"))
+
+from fp_lapse.configs import Shot, TimelapseConfig  # noqa: E402
+from fp_lapse.engine import EngineState  # noqa: E402
+from fp_lapse.ui.edit_screen import EditScreen, EditState  # noqa: E402
+from fp_lapse.ui.main_screen import MainScreen, UIState  # noqa: E402
+from fp_lapse.ui.manage_menu import ManageMenuState  # noqa: E402
+from fp_lapse.ui.manage_menu import render_manage_menu as _render_manage_menu  # noqa: E402
+from fp_lapse.ui.overlays import render_overlay, stop_confirm  # noqa: E402
+
+W, H = 320, 240
+
+# Palette tuned for high contrast on a small RGB565 TFT
+BG       = (10, 14, 20)
+FG       = (235, 235, 230)
+DIM      = (130, 130, 135)
+SEP      = (45, 50, 60)
+
+SEL_BG   = (215, 215, 215)
+SEL_FG   = (10, 10, 14)
+SEL_DIM  = (90, 90, 95)
+SEL_BAR  = (255, 200, 0)
+
+RUN_DOT  = (240, 60, 60)
+OK_DOT   = (90, 200, 90)
+WARN     = (240, 200, 60)
+ERR      = (240, 60, 60)
+
+OVERLAY_SHADE = (0, 0, 0, 170)
+DIALOG_BG = (28, 32, 42)
+DIALOG_BORDER = (90, 95, 110)
+
+
+# Fonts ---------------------------------------------------------------
+def _font(path, size):
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+MENLO = "/System/Library/Fonts/Menlo.ttc"
+HELV = "/System/Library/Fonts/Helvetica.ttc"
+
+F_BODY  = _font(MENLO, 11)
+F_BOLD  = _font("/System/Library/Fonts/Menlo.ttc", 11)  # Menlo doesn't ship bold via name; use same
+F_TITLE = _font(HELV, 14)
+F_SMALL = _font(MENLO, 9)
+
+
+# Helpers -------------------------------------------------------------
+def _text_w(d, s, font):
+    try:
+        return d.textlength(s, font=font)
+    except Exception:
+        return font.getbbox(s)[2]
+
+
+def status_bar(d, *, time_str="18:42:07", cam_ok=True,
+               skips=0, show_skips=True):
+    """Top status bar, ~18px tall.
+
+    Battery is intentionally not shown: sigma-ptpy does not expose the
+    fp's battery state. See reference.md §7.1 note and §10.
+    """
+    d.text((4, 2), time_str, font=F_BODY, fill=FG)
+    d.text((78, 2), "fp", font=F_BODY, fill=FG)
+    cx, cy, cr = 100, 8, 3
+    d.ellipse([cx - cr, cy - cr, cx + cr, cy + cr],
+              fill=OK_DOT if cam_ok else ERR)
+    if show_skips:
+        s = f"SKIPS {skips}"
+        sw = _text_w(d, s, F_BODY)
+        col = WARN if skips > 0 else FG
+        d.text((W - 6 - sw, 2), s, font=F_BODY, fill=col)
+    d.line([(0, 18), (W, 18)], fill=SEP)
+
+
+def footer(d, hint):
+    y = H - 16
+    d.line([(0, y), (W, y)], fill=SEP)
+    d.text((4, y + 3), hint, font=F_BODY, fill=DIM)
+
+
+def base_canvas():
+    return Image.new("RGB", (W, H), BG)
+
+
+# Shot row rendering --------------------------------------------------
+COL_IDX   = 14   # bracket index (single digit)
+COL_SHUT  = 32   # leave ~2 char gap after the index
+COL_ISO   = 112
+COL_APER  = 208
+
+
+def draw_shot_row(d, y, *, idx=None, shutter="—", iso="ISO —", aper="f/—",
+                  on_selected=False):
+    text_col = SEL_FG if on_selected else FG
+    dim_col = SEL_DIM if on_selected else DIM
+    if idx is not None:
+        d.text((COL_IDX, y), str(idx), font=F_BODY, fill=dim_col)
+    is_dash = shutter == "—" or shutter.startswith("ISO —") or shutter == "f/—"
+    d.text((COL_SHUT, y), shutter, font=F_BODY,
+           fill=dim_col if shutter == "—" else text_col)
+    d.text((COL_ISO,  y), iso, font=F_BODY,
+           fill=dim_col if iso == "ISO —" else text_col)
+    d.text((COL_APER, y), aper, font=F_BODY,
+           fill=dim_col if aper == "f/—" else text_col)
+
+
+def draw_header_row(d, y, name, summary, *, on_selected=False, running=False):
+    text_col = SEL_FG if on_selected else FG
+    x = 8
+    if running:
+        # red dot just before the name
+        rx, ry, rr = x + 2, y + 6, 3
+        d.ellipse([rx - rr, ry - rr, rx + rr, ry + rr], fill=RUN_DOT)
+        x = rx + rr + 4
+    d.text((x, y), name, font=F_BODY, fill=text_col)
+    sw = _text_w(d, summary, F_BODY)
+    d.text((W - 6 - sw, y), summary, font=F_BODY, fill=text_col)
+
+
+def selection_band(d, y0, height):
+    """Draw the selected-row band (full width) + left yellow bar."""
+    d.rectangle([0, y0, W - 1, y0 + height - 1], fill=SEL_BG)
+    d.rectangle([0, y0, 3, y0 + height - 1], fill=SEL_BAR)
+
+
+# Sample data ---------------------------------------------------------
+CONFIGS = [
+    ("Partial", "10 s · 1 shot", [
+        (None, "1/1000", "ISO 200", "f/—"),
+    ]),
+    ("Totality", "5 s · 5 shots", [
+        (1, "1/500", "ISO 400", "f/—"),
+        (2, "1/125", "ISO 400", "f/—"),
+        (3, "1/30",  "ISO 400", "f/—"),
+        (4, "1/8",   "ISO 400", "f/—"),
+        (5, "2 s",   "ISO auto", "f/—"),
+    ]),
+    ("Free daytime", "30 s · 1 shot", [
+        (None, "—", "ISO —", "f/—"),
+    ]),
+]
+
+
+def config_height(shots, running=False):
+    n = len(shots)
+    h = 13 + 12 * n + 4
+    if running:
+        h += 12  # extra line for "taken N   next in Xs"
+    return h
+
+
+def draw_config_block(d, y, name, summary, shots, *, selected=False,
+                      running=False, taken=None, next_in=None):
+    h = config_height(shots, running=running)
+    if selected:
+        selection_band(d, y, h - 4)
+    draw_header_row(d, y, name, summary,
+                    on_selected=selected, running=running)
+    yy = y + 12
+    if running:
+        sub_col = SEL_DIM if selected else DIM
+        sub = f"taken {taken}   next in {next_in}"
+        d.text((22, yy), sub, font=F_BODY, fill=sub_col)
+        yy += 12
+    for sh in shots:
+        idx, shutter, iso, aper = sh
+        draw_shot_row(d, yy, idx=idx, shutter=shutter, iso=iso, aper=aper,
+                      on_selected=selected)
+        yy += 12
+    return y + h
+
+
+# Screens -------------------------------------------------------------
+# Main screen fixtures match `tests/test_ui_main_screen.py` 1:1 — the
+# tests assert byte equality against the PNGs we generate here, so any
+# drift breaks them. Keep these aligned.
+_PARTIAL = TimelapseConfig(
+    name="Partial", interval_s=10.0,
+    shots=(Shot(shutter=1 / 1000, iso=200, aperture=None),),
+)
+_TOTALITY = TimelapseConfig(
+    name="Totality", interval_s=5.0,
+    shots=(
+        Shot(shutter=1 / 500, iso=400, aperture=None),
+        Shot(shutter=1 / 125, iso=400, aperture=None),
+        Shot(shutter=1 / 30,  iso=400, aperture=None),
+        Shot(shutter=1 / 8,   iso=400, aperture=None),
+        Shot(shutter=2.0,     iso=1600, aperture=None),
+    ),
+)
+# Auto mode: 1 shot per interval, camera meters.
+_FREE = TimelapseConfig(name="Free daytime", interval_s=30.0, shots=())
+
+
+def render_main_idle():
+    """IDLE main screen rendered via production code."""
+    return MainScreen().render(UIState(
+        configs=(_PARTIAL, _TOTALITY, _FREE),
+        cursor=0,
+        engine_state=EngineState.IDLE,
+        active_config_name=None,
+        shots_taken=0,
+        seconds_to_next_shot=None,
+        skips=0,
+        camera_connected=True,
+        wall_clock_str="18:42:07",
+    ))
+
+
+def render_main_running_on_running():
+    """RUNNING, cursor sits on the running config (Totality)."""
+    return MainScreen().render(UIState(
+        configs=(_TOTALITY, _PARTIAL),
+        cursor=0,
+        engine_state=EngineState.RUNNING,
+        active_config_name="Totality",
+        shots_taken=142,
+        seconds_to_next_shot=4.3,
+        skips=0,
+        camera_connected=True,
+        wall_clock_str="18:42:07",
+    ))
+
+
+def render_main_running_off_running():
+    """RUNNING, cursor sits on a different config (Partial)."""
+    return MainScreen().render(UIState(
+        configs=(_TOTALITY, _PARTIAL),
+        cursor=1,
+        engine_state=EngineState.RUNNING,
+        active_config_name="Totality",
+        shots_taken=142,
+        seconds_to_next_shot=4.3,
+        skips=0,
+        camera_connected=True,
+        wall_clock_str="18:42:07",
+    ))
+
+
+def render_edit():
+    """Pantalla de edición — renderizada por el código productivo."""
+    cfg = TimelapseConfig(
+        name="Totality",
+        interval_s=5.0,
+        shots=(
+            Shot(shutter=1 / 500, iso=400, aperture=None),
+            Shot(shutter=1 / 125, iso=400, aperture=None),
+            Shot(shutter=1 / 30, iso=400, aperture=None),
+            Shot(shutter=1 / 8, iso=400, aperture=None),
+            Shot(shutter=2.0, iso="auto", aperture=None),
+        ),
+    )
+    # field_cursor=3 = "#1 shutter" (campos: name, interval, bracket size, #1 shutter, …)
+    state = EditState(cfg=cfg, field_cursor=3, scroll_offset=0)
+    return EditScreen().render(state)
+
+
+def render_overlay_stop():
+    """Confirmation overlay on top of running main screen — productive code."""
+    return render_overlay(render_main_running_on_running(), stop_confirm())
+
+
+def render_manage_menu():
+    """Manage menu overlay opened via long-press OK on Totality — productive code."""
+    return _render_manage_menu(
+        render_main_idle(),
+        ManageMenuState(config_name="Totality", cursor=0),
+    )
+
+
+# Main ----------------------------------------------------------------
+OUT = Path(__file__).parent
+
+
+def save(img, name):
+    img.save(OUT / f"{name}.png")
+    print(f"  wrote {name}.png")
+
+
+def main():
+    print("Rendering UI mockups...")
+    save(render_main_idle(),                "01_main_idle")
+    save(render_main_running_on_running(),  "02_main_running_cursor_on_running")
+    save(render_main_running_off_running(), "03_main_running_cursor_elsewhere")
+    save(render_edit(),                     "04_edit")
+    save(render_overlay_stop(),             "05_overlay_stop_confirm")
+    save(render_manage_menu(),              "06_manage_menu")
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

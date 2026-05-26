@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fp-lapse"
+version = "1.0.0"
+description = "Intervalometer and timelapse controller for the Sigma fp, running on a Raspberry Pi with TFT + buttons."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Jose A. Hurtado", email = "jahurtado@users.noreply.github.com" },
+]
+dependencies = [
+    "Pillow>=10.0",
+    # piwheels' cp313 (Trixie) build of numpy lags the very latest release
+    # by a patch, so cap armv7l at a version it has actually built for
+    # cp313; other platforms (PyPI) track the latest. Bump the cap when
+    # piwheels catches up — numpy's API for our use (RGB→RGB565 packing)
+    # is stable, so the exact version doesn't matter functionally.
+    "numpy>=1.24; platform_machine != 'armv7l'",
+    "numpy>=1.24,<2.4.6; platform_machine == 'armv7l'",
+]
+
+[project.urls]
+Homepage      = "https://github.com/jahurtado/fp-lapse"
+Repository    = "https://github.com/jahurtado/fp-lapse"
+Issues        = "https://github.com/jahurtado/fp-lapse/issues"
+Documentation = "https://github.com/jahurtado/fp-lapse/blob/main/docs/user-guide.md"
+Reference     = "https://github.com/jahurtado/fp-lapse/blob/main/docs/reference.md"
+
+[project.optional-dependencies]
+# Hardware-only deps. Install on the Raspberry Pi with
+# `uv sync --extra pi`. On Mac these aren't needed — the Tk mocks
+# cover display, buttons, and camera.
+pi = [
+    "sigma-ptpy>=0.2.0",
+    "gpiozero>=2.0",
+    # lgpio is gpiozero's modern backend. The legacy RPi.GPIO can't do
+    # edge detection on recent Raspberry Pi OS kernels (Bookworm/Trixie),
+    # failing with "Failed to add edge detection".
+    "lgpio>=0.2",
+]
+
+[project.scripts]
+fp-lapse = "fp_lapse.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fp_lapse = ["py.typed"]
+
+# `sigma-ptpy` isn't on PyPI; it lives as a GitHub repo. Declared here
+# so uv can resolve the lockfile on any platform, but only installed
+# when the `[pi]` extra is requested explicitly.
+[tool.uv]
+# numpy/Pillow on armv7l come from piwheels, which ships wheels only (no
+# sdists). Force wheel-only so the resolver picks a version piwheels has
+# actually built for the target Python: on Trixie/Python 3.13 the very
+# latest numpy may only have cp311 wheels, so uv must fall back to the
+# newest version that has a cp313 wheel instead of failing.
+no-build-package = ["numpy", "pillow", "lgpio"]
+
+[tool.uv.sources]
+sigma-ptpy = { git = "https://github.com/makanikai/sigma-ptpy.git" }
+# On ARM v7 (Pi 3) numpy and Pillow have no usable PyPI wheel and
+# compiling from sdist on a 1 GB Pi is painful. piwheels.org publishes
+# prebuilt armv7l wheels we pull instead. On other platforms (Mac,
+# x86_64 CI) the marker is false and they resolve from PyPI.
+numpy = [
+    { index = "piwheels", marker = "platform_machine == 'armv7l'" },
+]
+pillow = [
+    { index = "piwheels", marker = "platform_machine == 'armv7l'" },
+]
+# lgpio has no PyPI wheel for armv7l and building it needs swig; piwheels
+# ships a prebuilt wheel.
+lgpio = [
+    { index = "piwheels", marker = "platform_machine == 'armv7l'" },
+]
+
+# piwheels declared as an explicit (= per-package opt-in) index so it
+# doesn't shadow PyPI for everything else.
+[[tool.uv.index]]
+name = "piwheels"
+url = "https://www.piwheels.org/simple/"
+explicit = true
