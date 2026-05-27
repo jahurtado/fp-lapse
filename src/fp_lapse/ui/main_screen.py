@@ -59,6 +59,12 @@ class UIState:
     # `engine.consecutive_failures` and `app._configs_reset`.
     camera_not_responding: bool = False
     configs_reset: bool = False
+    # Live camera identity for the status bar. "fp" (Sigma) by default;
+    # "D5600" when the Nikon is detected. Updates on hot-swap.
+    camera_model_label: str = "fp"
+    # D5600 mode-dial mismatch: the engine wants MANUAL/PROGRAM but the
+    # physical dial disagrees. Shows a "DIAL NOT ON M" warning.
+    dial_mismatch: bool = False
 
 
 class MainScreen:
@@ -75,6 +81,8 @@ class MainScreen:
             cam_connected=state.camera_connected,
             skips=state.skips,
             show_skips=is_running or state.skips > 0,
+            model_label=state.camera_model_label,
+            dial_mismatch=state.dial_mismatch,
         )
 
         # Persistent banners (§6.1, §6.3). When both fire the camera

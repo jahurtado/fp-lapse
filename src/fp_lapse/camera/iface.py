@@ -102,6 +102,21 @@ class Camera(Protocol):
     def disconnect(self) -> None: ...
     def is_connected(self) -> bool: ...
 
+    def probe(self) -> None:
+        """Cheap transport round-trip used by the health watchdog.
+
+        `camera_health` calls this on every tick to detect a *silent*
+        disconnect (USB pulled / camera asleep while the engine is idle).
+        It MUST hit the device and raise `CameraNotConnected` if the body
+        is gone — it must NOT be satisfiable by a cached read (a cached
+        read would let a disconnect go unnoticed). Returns None on success.
+
+        `info()` / `status()` are for reading data, not liveness; the
+        liveness contract lives here so each adapter can choose the
+        cheapest call that actually reaches the device.
+        """
+        ...
+
     # --- introspection ---
     def info(self) -> CameraInfo: ...
     def status(self) -> CameraStatus: ...

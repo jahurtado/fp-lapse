@@ -169,6 +169,42 @@ on the next shot — the engine doesn't rely on the body's dial
 position. `set_params` always receives numeric values (or `None` for
 optional aperture).
 
+### 3.4 Supported cameras and auto-detection
+
+Two camera bodies are supported, both over USB-PTP:
+
+- **Sigma fp** — via `sigma-ptpy`. Mode *USB Mode → Camera Control*.
+- **Nikon D5600** — via `gphoto2` / `libgphoto2`. Trigger-only: shots
+  are saved to the camera's SD card, never downloaded to the Pi.
+
+The adapter is chosen by USB **VID/PID** — read from the device
+descriptors, before any PTP library opens the bus. This matters because
+both bodies are PTP-class devices: a library that grabbed "the PTP
+camera" by class would seize whichever is plugged in (including the
+Nikon) and drive it with the wrong commands. Selection happens at
+startup **and at runtime** — unplugging one body and plugging in the
+other re-detects and swaps the adapter automatically (**hot-swap**)
+within a few camera-health ticks, no restart. Mid-swap a single shot
+may fail (counted as a skip); the timelapse continues on its grid.
+
+Precedence: the `FP_LAPSE_CAMERA` env var
+(`mock` | `sigma_fp` | `nikon_d5600`, subsuming the legacy
+`FP_LAPSE_MOCK=1` = `mock`) forces a specific adapter; otherwise on
+macOS the mock is used; otherwise auto-detect by VID/PID. **With both
+bodies attached, the Nikon wins** by default (overridable via the env
+var).
+
+**D5600 exposure dial is read-only over USB.** The engine still calls
+`set_params(exposure_mode=…)` every fire, but the Nikon adapter cannot
+change the physical mode dial — it only reads it. For deterministic
+manual exposure (the primary eclipse path), **set the dial to M**. If
+the engine wants `MANUAL` but the dial is elsewhere (or wants
+`PROGRAM`/auto but the dial is on M), the run is **not blocked**
+(warn-and-continue): the camera fires in whatever mode the dial is set
+to, and a `DIAL NOT ON M` warning appears in the status bar (§7.1). The
+Sigma fp, by contrast, can be forced to Manual programmatically and has
+no such indicator.
+
 ---
 
 ## 4. Time synchronization
@@ -400,15 +436,20 @@ Conventions:
 **Status bar** (always visible, on top):
 
 - Local wall-clock time.
-- `fp ●` (green) or `fp ✕` (red) depending on the camera's USB
-  connection.
+- The **live camera model label** (`fp` for the Sigma, `D5600` for the
+  Nikon) followed by `●` (green, connected) or `●` red (not connected).
+  The label updates automatically when the body is hot-swapped (§3.4).
+- A `DIAL NOT ON M` warning (WARN amber) when the Nikon D5600's
+  read-only mode dial disagrees with the exposure mode the engine
+  requested (§3.4). Not shown for the Sigma fp.
 - `SKIPS N` only if the engine is RUNNING or if there were skips in
   the last run since the last boot.
 
-> Note: the fp's battery level is **not shown** because `sigma-ptpy`
-> doesn't expose that data. The `battery_pct` field exists in
-> `CameraStatus` for the future, but the real adapter always returns
-> `None`. The user checks battery state on the camera itself.
+> Note: the Sigma fp's battery level is **not shown** because
+> `sigma-ptpy` doesn't expose that data; the real adapter returns
+> `None`. The Nikon adapter *does* fill `battery_pct` (from gphoto2's
+> `batterylevel`), but it is not yet surfaced in the status bar. The
+> user checks battery state on the camera itself.
 
 **Button mapping in IDLE:**
 

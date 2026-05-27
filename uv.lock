@@ -35,7 +35,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/b6/2c/66bab4fef920ef8ca
 
 [[package]]
 name = "fp-lapse"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.5", source = { registry = "https://www.piwheels.org/simple/" }, marker = "platform_machine == 'armv7l'" },
@@ -45,6 +45,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+nikon = [
+    { name = "gphoto2" },
+]
 pi = [
     { name = "gpiozero" },
     { name = "lgpio", version = "0.2.2.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'armv7l'" },
@@ -54,6 +57,7 @@ pi = [
 
 [package.metadata]
 requires-dist = [
+    { name = "gphoto2", marker = "extra == 'nikon'", specifier = ">=2.5" },
     { name = "gpiozero", marker = "extra == 'pi'", specifier = ">=2.0" },
     { name = "lgpio", marker = "platform_machine == 'armv7l' and extra == 'pi'", specifier = ">=0.2", index = "https://www.piwheels.org/simple/" },
     { name = "lgpio", marker = "platform_machine != 'armv7l' and extra == 'pi'", specifier = ">=0.2" },
@@ -63,7 +67,35 @@ requires-dist = [
     { name = "pillow", marker = "platform_machine == 'armv7l'", specifier = ">=10.0", index = "https://www.piwheels.org/simple/" },
     { name = "sigma-ptpy", marker = "extra == 'pi'", git = "https://github.com/makanikai/sigma-ptpy.git" },
 ]
-provides-extras = ["pi"]
+provides-extras = ["pi", "nikon"]
+
+[[package]]
+name = "gphoto2"
+version = "2.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/63/1ba9c79d60755a2653ffb60c4a22b9cb8a64b4c2a45e99ee31c6dbfeffc3/gphoto2-2.6.3.tar.gz", hash = "sha256:829194ed341b01472778a00d5186412f1442de79f37c9bb1d16a0e5af6b8d24b", size = 532300, upload-time = "2025-10-20T12:27:39.758Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/72/c02bc7f52ad1d2d23f2fa8eae887b2736b52e24b9267df7b405aabebe91b/gphoto2-2.6.3-cp311-cp311-macosx_13_0_x86_64.whl", hash = "sha256:97ec351c28de447f53b1bec8d8bba28e2a0cf5e9fb9d5e23eb278e4ab37d7605", size = 6460269, upload-time = "2025-10-20T11:47:45.76Z" },
+    { url = "https://files.pythonhosted.org/packages/57/52/d213bb920219c8ea004f92d0fb5e319ddd1896e773a9cb48261b626513a0/gphoto2-2.6.3-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:db9d142e4e7f8c85fb4b74d359e837d472c9325083b003a854bf78415e7769b0", size = 6221750, upload-time = "2025-10-20T11:48:45.396Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/68/cfeb0cff872a698b20f050c9cc01122f5ee607a10206648c038312c7e3c5/gphoto2-2.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:befbbd9004402c57fb645d4b9cda729813ec506b5d5c999c25dca32db5bd4f8b", size = 11436632, upload-time = "2025-10-20T11:50:34.083Z" },
+    { url = "https://files.pythonhosted.org/packages/19/dd/fcc9c3405e95b79cfb71367ff380993cc6f748798d3e1e28094f2bf62972/gphoto2-2.6.3-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:a896542a6812d02286f98d55b55bba9baa6b57468e2d9970c85aef79a10d719e", size = 12627702, upload-time = "2025-10-20T11:52:39.821Z" },
+    { url = "https://files.pythonhosted.org/packages/56/c7/4a7c67dbe4b9c6ab45e87e94e331614b5271c8b11656f7a48f7fe19f49ea/gphoto2-2.6.3-cp312-cp312-macosx_13_0_x86_64.whl", hash = "sha256:6c586291e1a6a1de7c7496a6fcfea07f1a278726753c3485c3a9644df1551036", size = 6465396, upload-time = "2025-10-20T11:53:57.233Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/1d/b37e9e11e60adac4e9feeec7e57e70beea4d9fe173f099f8f1a1cc737f1e/gphoto2-2.6.3-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:1b3258489d1c0615d554930c17b84c77d735d5f69335fbe7ff79a533f0e4280f", size = 6223890, upload-time = "2025-10-20T11:55:01.143Z" },
+    { url = "https://files.pythonhosted.org/packages/91/9b/ec78652eff6682733ee8f2f98af5be0ec22ea872f22eea073538543fb0ae/gphoto2-2.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f316d960409ef1e205882416d9d74eacf3a1cd0142c93e2d19b5850f3054104c", size = 11492231, upload-time = "2025-10-20T11:57:08.463Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/70/9f156950f050f7576d15614e5b956e9e48248f60c8e75cef39a15dffc91b/gphoto2-2.6.3-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:985d9507794c37a2874079c30c82658ecb27d6c1f492e6a3445ee89322e1add9", size = 12675714, upload-time = "2025-10-20T11:59:25.784Z" },
+    { url = "https://files.pythonhosted.org/packages/64/79/70ef4352f65c07f442c6946cb3f69ddab93c5fa4748ef85c390bf6f2ddbc/gphoto2-2.6.3-cp313-cp313-macosx_13_0_x86_64.whl", hash = "sha256:7e71cfa56a7b7edbe645570cd308dab08ed278e7292d2aeecc4337a8f4427c2e", size = 6466320, upload-time = "2025-10-20T12:00:31.082Z" },
+    { url = "https://files.pythonhosted.org/packages/10/d5/37f93bec5c4e3dfd39ec8e1331000e15f08ba7669c3ddec08a5fb9d1d191/gphoto2-2.6.3-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:2bcec32d07362548c252e51686e2ee8e1d1d981643e90b4959bcc18a311df499", size = 6224559, upload-time = "2025-10-20T12:01:44.493Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/98/bcef83fe0fbc0458e37e9778d22ba8411fa1e0e3313b24640b64d1a7d863/gphoto2-2.6.3-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:35f875bc73b9aee71fd594e5b95321d0a3f65ec7673bdecb578d8481aad3b93e", size = 11491456, upload-time = "2025-10-20T12:03:31.714Z" },
+    { url = "https://files.pythonhosted.org/packages/33/45/c7f6db59e8b9f4ead0079fb72a63c913e5eda06755dc73ba38fe0ecd9c26/gphoto2-2.6.3-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:3b54fec7ba3ae5dfa85fb533b216d1df17bb8ee78c49443a4868ad2ba2e7838d", size = 12669424, upload-time = "2025-10-20T12:05:37.181Z" },
+    { url = "https://files.pythonhosted.org/packages/72/68/fffdf5afb73482d5d892e447f21d8f5864c1f611cdc2dc22b84aefd39211/gphoto2-2.6.3-cp314-cp314-macosx_13_0_x86_64.whl", hash = "sha256:624f0b6bca2da9434bb14a0d3388fe48abe7bfcee04060bc7ac20b5e4a2f4ace", size = 6493374, upload-time = "2025-10-22T15:10:10.43Z" },
+    { url = "https://files.pythonhosted.org/packages/41/2a/32088aa456a93073554b9696b9a0afb9eecb7dcbc4c819677b4da23174a6/gphoto2-2.6.3-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:24d87b9be75610cff1fc99b235ffad5cfc24f1a382e02f6571c83bc16c1c939d", size = 6252971, upload-time = "2025-10-22T14:58:43.64Z" },
+    { url = "https://files.pythonhosted.org/packages/55/4c/569a6026244f372f07094794b028939e57ecfde12b88092f8c8577cd76e8/gphoto2-2.6.3-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:119007036ce450ee4c04a7bbbda63cd25e7c0f6b3e25f4aeafd31e3d10f0e289", size = 11569689, upload-time = "2025-10-22T15:01:07.081Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/e1/331012b67a8f0db48b05c236397451cbcdc2bdcb519c11b0edcbccc524e7/gphoto2-2.6.3-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:3f60512095c94ad2cc4008e65946b5925fa698b85f3dd04112c1d1b0ee7c3d68", size = 12736715, upload-time = "2025-10-22T15:03:13.866Z" },
+    { url = "https://files.pythonhosted.org/packages/17/ad/b83dafb7897e2ae41c869866e750c6ca419ab898cc1178eb10d5ad1db55b/gphoto2-2.6.3-cp314-cp314t-macosx_13_0_x86_64.whl", hash = "sha256:4ac7106577b66f3cd184613dc7b0858c6f52f4bae23efc7d614d82ac5794ab1f", size = 6502784, upload-time = "2025-10-22T15:11:30.015Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/49/eceddd60889efae9d814573719529355220d8d9e00fe1d1bf4cfb7fcb949/gphoto2-2.6.3-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:683601934a996face8292a693b3873ab0245c2674110a431e51e23c168b881ce", size = 6262878, upload-time = "2025-10-22T15:04:14.917Z" },
+    { url = "https://files.pythonhosted.org/packages/07/5c/09abc7af98c8eef8c9365feafbadef2f74a7c34201a8133c0c848aabdf47/gphoto2-2.6.3-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:18cf679835dc78ca42ee4513c3e0fa28b32729d41a0dcce028038381b9798e81", size = 11650949, upload-time = "2025-10-22T15:06:21.357Z" },
+    { url = "https://files.pythonhosted.org/packages/03/b9/18ae47730b4e1428e120e63915be61d04515550781f8a6fec50a60f3d801/gphoto2-2.6.3-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:3b889a21a5c16a50af88174e7ab3c51bb4f93a50d7049a8e252cba7b4e4e33db", size = 12897759, upload-time = "2025-10-22T15:08:23.454Z" },
+]
 
 [[package]]
 name = "gpiozero"

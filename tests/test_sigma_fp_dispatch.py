@@ -44,6 +44,16 @@ class TestShootDispatchesByFocusMode(unittest.TestCase):
         self.assertIn("SnapCommand(CaptureMode=", self.source)
         self.assertNotIn("snap_command(SnapCommand())", self.source)
 
+    def test_has_probe_liveness_method(self):
+        # probe() is the explicit liveness call the health watchdog uses.
+        # It must do a real PTP round-trip (get_device_info) and route any
+        # transport error through _mark_disconnected so the camera-health
+        # thread reconnects. (Source-level check; the dep isn't on the Mac.)
+        self.assertIn("def probe(self)", self.source)
+        probe = self.source.split("def probe")[1].split("\n    def ")[0]
+        self.assertIn("get_device_info", probe)
+        self.assertIn("_mark_disconnected", probe)
+
     def test_connect_forces_manual_exposure(self):
         # ProgramAuto silently overrides our shutter/iso requests. The
         # adapter must force Manual at connect so `set_params` is

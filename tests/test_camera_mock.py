@@ -35,6 +35,16 @@ class TestMockCameraLifecycle(unittest.TestCase):
         cam.disconnect()
         self.assertFalse(cam.is_connected())
 
+    def test_probe_returns_none_when_connected(self):
+        cam = MockCamera()
+        cam.connect()
+        self.assertIsNone(cam.probe())
+
+    def test_probe_raises_when_not_connected(self):
+        cam = MockCamera()
+        with self.assertRaises(CameraNotConnected):
+            cam.probe()
+
 
 class TestMockCameraConfig(unittest.TestCase):
     def setUp(self):

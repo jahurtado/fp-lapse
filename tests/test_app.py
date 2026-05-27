@@ -97,6 +97,37 @@ class TestAppLifecycle(unittest.TestCase):
         img = app.render()
         self.assertEqual(img.size, (320, 240))
 
+    def test_render_uses_camera_model_label_and_dial(self):
+        # The App must surface the proxy's model_label()/dial_mismatch()
+        # into the rendered status bar, without touching the engine. A
+        # camera fake exposing those methods (like CameraProxy) changes the
+        # pixels vs. a plain MockCamera default ("fp", no warning).
+        app, _, _ = _make_app(self, initial_configs=(A,))
+        plain = app.render().tobytes()
+
+        class _ProxyLike(MockCamera):
+            def model_label(self_inner):
+                return "D5600"
+
+            def dial_mismatch(self_inner):
+                return True
+
+        app.camera = _ProxyLike(sleep_overhead_s=0.0)
+        app.camera.connect()
+        # Engine still holds the original camera; we only swapped the App's
+        # reference, which is what feeds _render_main_screen. That's enough
+        # to prove the UI reads the label/warning from app.camera.
+        self.assertEqual(app._camera_model_label(), "D5600")
+        self.assertTrue(app._camera_dial_mismatch())
+        labelled = app.render().tobytes()
+        self.assertNotEqual(plain, labelled)
+
+    def test_render_defaults_for_plain_camera(self):
+        # MockCamera has no model_label()/dial_mismatch() → safe defaults.
+        app, _, _ = _make_app(self, initial_configs=(A,))
+        self.assertEqual(app._camera_model_label(), "fp")
+        self.assertFalse(app._camera_dial_mismatch())
+
 
 class TestMainActions(unittest.TestCase):
     def test_ok_starts_engine(self):

@@ -247,7 +247,37 @@ class App:
                 status.consecutive_failures >= self._CAMERA_DOWN_THRESHOLD
             ),
             configs_reset=self._configs_reset,
+            camera_model_label=self._camera_model_label(),
+            dial_mismatch=self._camera_dial_mismatch(),
         ))
+
+    def _camera_model_label(self) -> str:
+        """Live status-bar label for the camera ("fp" / "D5600").
+
+        The `CameraProxy` exposes `model_label()` (cached, I/O-free). Plain
+        adapters / `MockCamera` lack it, so we default to "fp".
+        """
+        fn = getattr(self.camera, "model_label", None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                pass
+        return "fp"
+
+    def _camera_dial_mismatch(self) -> bool:
+        """Whether the live camera's exposure dial is in the wrong mode.
+
+        The `CameraProxy` exposes `dial_mismatch()` (delegating to the
+        Nikon adapter). Adapters without the concept report False.
+        """
+        fn = getattr(self.camera, "dial_mismatch", None)
+        if callable(fn):
+            try:
+                return bool(fn())
+            except Exception:
+                pass
+        return False
 
     # -- Dispatch helpers ------------------------------------------------
 

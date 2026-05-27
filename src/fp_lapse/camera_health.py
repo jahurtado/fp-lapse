@@ -10,16 +10,20 @@ had to restart the service.
 This thread closes that gap. On a 5 s cadence (configurable):
 
 - If `camera.is_connected()` is False, call `camera.connect()`.
-- If `is_connected()` is True, **probe** with a lightweight PTP call
-  (`info()` — one roundtrip). Without the probe, `is_connected()`
-  stays True after the cable is pulled because no PTP traffic flowed
-  to discover the dead bus. With the probe, a silent disconnect is
-  detected within one tick.
+- If `is_connected()` is True, **probe** with a lightweight transport
+  call (`probe()` — one roundtrip). Without the probe, `is_connected()`
+  stays True after the cable is pulled because no transport traffic
+  flowed to discover the dead bus. With the probe, a silent disconnect
+  is detected within one tick. `probe()` is an explicit, documented part
+  of the `Camera` Protocol: each adapter implements it as the cheapest
+  call that actually reaches the device (Sigma: `get_device_info`,
+  Nikon: `get_summary`). Crucially it must NOT be satisfiable by a
+  cached read — `info()` is for data, not liveness.
 
 Either branch sets the optional `dirty_event` on a state change so
 the UI re-renders (camera indicator etc.) immediately.
 
-Lock interaction: `camera.connect()` / `camera.info()` acquire the
+Lock interaction: `camera.connect()` / `camera.probe()` acquire the
 adapter's own internal lock (which also guards `shoot()` from the
 scheduler thread). If a shoot is in flight, this thread blocks
 until it finishes — fine, the 5 s cadence has plenty of slack.
@@ -77,11 +81,11 @@ class CameraHealth:
             return
 
         if connected:
-            # Active probe. The `SigmaFpCamera.info()` adapter wraps
-            # any transport error with `_mark_disconnected()` which
-            # resets `_cam = None` and re-raises `CameraNotConnected`.
+            # Active probe. The adapter's `probe()` wraps any transport
+            # error with `_mark_disconnected()` which resets `_cam = None`
+            # and re-raises `CameraNotConnected`.
             try:
-                self._camera.info()
+                self._camera.probe()
                 return
             except Exception as e:
                 # We treat ANY probe failure as "lost the camera". The

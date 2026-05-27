@@ -83,13 +83,20 @@ def _build_buttons():
 
 
 def _build_camera():
-    if _use_mock():
-        from .camera import MockCamera
-        cam = MockCamera(sleep_overhead_s=0.0)
-        cam.connect()
-        return cam
-    from .camera.sigma_fp import SigmaFpCamera
-    cam = SigmaFpCamera()
+    """Build the camera as a `CameraProxy`.
+
+    The proxy detects the attached camera by USB VID/PID (or the
+    `FP_LAPSE_CAMERA` / `FP_LAPSE_MOCK` override) and holds the matching
+    adapter, swapping it at runtime when the body changes (hot-swap). It is
+    the single stable reference handed to the engine, app and health thread.
+
+    The initial `connect()` is wrapped in try/except so the app still boots
+    when no camera is attached — the camera-health thread keeps retrying,
+    and plugging a camera in later (or swapping one for another) is picked
+    up automatically.
+    """
+    from .camera.proxy import CameraProxy
+    cam = CameraProxy()
     try:
         cam.connect()
     except Exception as e:

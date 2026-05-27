@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-05-27
+
+Adds a second supported camera — the **Nikon D5600** — alongside the
+Sigma fp, with automatic detection and runtime hot-swap.
+
+### Added
+
+- **Nikon D5600 support** over USB via `gphoto2` / `libgphoto2` (the
+  `[nikon]` optional dependency, plus the `libgphoto2-dev` system package
+  on the Pi). Manual exposure (ISO, shutter, aperture) is driven from the
+  engine; frames are triggered to the camera's SD card, not downloaded to
+  the Pi.
+- **Automatic camera selection** by USB VID/PID at startup, and **runtime
+  hot-swap** — unplug one body and plug in the other and the app
+  reconfigures within a few seconds, no restart. Override the
+  auto-detection with the `FP_LAPSE_CAMERA` environment variable
+  (`mock` | `sigma_fp` | `nikon_d5600`).
+- Status bar shows the live camera model (`fp` / `D5600`) and a
+  `DIAL NOT ON M` warning when the Nikon's mode dial disagrees with the
+  configured manual exposure.
+
+### Changed
+
+- The camera abstraction gained an explicit `probe()` liveness method;
+  the camera-health watchdog uses it to detect silent USB disconnects
+  reliably on both transports.
+
+### Fixed
+
+- Pinned the project to **Python 3.13** — the version Raspberry Pi OS
+  Trixie ships and that piwheels builds armv7 wheels for.
+
+### Notes
+
+- The Nikon D5600's exposure-mode dial is read-only over USB: set it to
+  **M** for deterministic manual exposure. gphoto2 must run as root (the
+  systemd service already does).
+
 ## [1.0.0] — 2026-05-22
 
 First public release. Functionally complete for the headline use

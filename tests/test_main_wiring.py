@@ -34,5 +34,41 @@ class TestBuildButtonsWiring(unittest.TestCase):
         )
 
 
+class TestBuildCameraWiring(unittest.TestCase):
+    def test_build_camera_returns_proxy(self):
+        # `_build_camera()` must return a `CameraProxy` so the live adapter
+        # can be hot-swapped behind a stable reference. On the Mac the proxy
+        # resolves to the mock and connects.
+        from fp_lapse.camera.proxy import CameraProxy
+        cam = main_mod._build_camera()
+        self.assertIsInstance(cam, CameraProxy)
+        self.assertTrue(cam.is_connected())
+
+    def test_build_camera_swallows_connect_failure(self):
+        # The app must still boot if the camera is absent (today's
+        # behaviour): a connect() failure is logged, not raised.
+        from fp_lapse.camera.proxy import CameraProxy
+
+        # A proxy whose adapter fails to connect must not raise out of
+        # connect() unguarded at the call site: the build helper wraps it in
+        # try/except so the app boots camera-less. Verify both the proxy
+        # propagates (so the wrap is meaningful) and the helper wraps it.
+        proxy = CameraProxy(detector=lambda: "sigma_fp",
+                            factory=lambda kind: _FailingAdapter())
+        with self.assertRaises(RuntimeError):
+            proxy.connect()
+        src = inspect.getsource(main_mod._build_camera)
+        self.assertIn("try:", src)
+        self.assertIn("CameraProxy", src)
+
+
+class _FailingAdapter:
+    def connect(self):
+        raise RuntimeError("no camera")
+
+    def is_connected(self):
+        return False
+
+
 if __name__ == "__main__":
     unittest.main()

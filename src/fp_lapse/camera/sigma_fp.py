@@ -204,6 +204,20 @@ class SigmaFpCamera:
             raise CameraNotConnected("SigmaFpCamera is not connected")
         return self._cam
 
+    # --- liveness ---
+    def probe(self) -> None:
+        """Liveness round-trip for the health watchdog (see Camera.probe).
+
+        `get_device_info()` is a real PTP round-trip on the fp that fails
+        when the body is gone, so it reliably detects a silent disconnect.
+        """
+        with self._lock:
+            cam = self._require()
+            try:
+                cam.get_device_info()
+            except Exception as e:
+                raise self._mark_disconnected(e)
+
     # --- introspection ---
     def info(self) -> CameraInfo:
         with self._lock:

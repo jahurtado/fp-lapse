@@ -33,6 +33,16 @@ def text_width(draw: ImageDraw.ImageDraw, s: str, font) -> int:
 _text_w = text_width
 
 
+# Where the camera model label starts (px). The connection dot and any
+# warning indicator are placed dynamically to the right of the label so a
+# longer model name ("D5600") doesn't collide with the dot. The gap is
+# tuned so the legacy "fp" label keeps the dot at its historical x=100
+# (preserving the byte-exact mockups): 78 + width("fp")=14 + 8 = 100.
+_MODEL_LABEL_X: int = 78
+_DOT_GAP: int = 8   # px from the label's right edge to the dot centre
+_WARN_GAP: int = 8  # px from the dot to the dial-warning text
+
+
 def status_bar(
     draw: ImageDraw.ImageDraw,
     *,
@@ -40,14 +50,30 @@ def status_bar(
     cam_connected: bool,
     skips: int = 0,
     show_skips: bool = True,
+    model_label: str = "fp",
+    dial_mismatch: bool = False,
 ) -> None:
-    """Top bar. Occupies up to y=18 (separator line included)."""
+    """Top bar. Occupies up to y=18 (separator line included).
+
+    `model_label` is the live camera's short name ("fp" for the Sigma,
+    "D5600" for the Nikon); it updates when the camera is hot-swapped.
+    `dial_mismatch` shows a `DIAL NOT ON M` warning (WARN colour) when the
+    engine's requested exposure mode disagrees with the D5600's physical
+    mode dial.
+    """
     font = fonts.mono(_BODY_PT)
     draw.text((4, 2), time_str, font=font, fill=theme.FG)
-    draw.text((78, 2), "fp", font=font, fill=theme.FG)
-    cx, cy, cr = 100, 8, 3
+    draw.text((_MODEL_LABEL_X, 2), model_label, font=font, fill=theme.FG)
+    label_w = _text_w(draw, model_label, font)
+    cx = _MODEL_LABEL_X + label_w + _DOT_GAP
+    cy, cr = 8, 3
     dot = theme.OK_DOT if cam_connected else theme.ERR
     draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=dot)
+    if dial_mismatch:
+        draw.text(
+            (cx + cr + _WARN_GAP, 2), "DIAL NOT ON M",
+            font=font, fill=theme.WARN,
+        )
     if show_skips:
         s = f"SKIPS {skips}"
         sw = _text_w(draw, s, font)

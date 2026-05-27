@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fp-lapse"
-version = "1.0.0"
-description = "Intervalometer and timelapse controller for the Sigma fp, running on a Raspberry Pi with TFT + buttons."
+version = "1.1.0"
+description = "Intervalometer and timelapse controller for the Sigma fp and Nikon D5600, running on a Raspberry Pi with TFT + buttons."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -41,6 +41,15 @@ pi = [
     # edge detection on recent Raspberry Pi OS kernels (Bookworm/Trixie),
     # failing with "Failed to add edge detection".
     "lgpio>=0.2",
+]
+# Nikon D5600 adapter (gphoto2 / libgphoto2). Install on the Pi with
+# `uv sync --extra pi --extra nikon`. Needs the system package
+# `libgphoto2-dev` to build the C binding (apt, Pi-side; the spike had
+# gphoto2 2.5.28 / libgphoto2 2.5.31 already installed). Not needed on the
+# Mac — the camera layer is import-safe without gphoto2 (lazy import in
+# `camera/nikon_gphoto.py`, never at package level).
+nikon = [
+    "gphoto2>=2.5",   # PyPI: python-gphoto2, the libgphoto2 binding
 ]
 
 [project.scripts]

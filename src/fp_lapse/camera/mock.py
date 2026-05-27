@@ -78,6 +78,12 @@ class MockCamera:
         if not self._connected:
             raise CameraNotConnected("mock camera is not connected")
 
+    # --- liveness ---
+    def probe(self) -> None:
+        """Liveness check (see Camera.probe). No real I/O for the mock —
+        just raises CameraNotConnected if not connected."""
+        self._require()
+
     # --- introspection ---
     def info(self) -> CameraInfo:
         self._require()

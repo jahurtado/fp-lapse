@@ -16,13 +16,13 @@ from fp_lapse.camera_health import CameraHealth  # noqa: E402
 
 
 class FlakyCamera:
-    """Stub camera with controllable is_connected() / connect() / info().
+    """Stub camera with controllable is_connected() / connect() / probe().
 
-    `info()` is the probe used by the health thread to detect silent
-    disconnects. It raises `CameraNotConnected` (and flips the
-    internal `_connected` flag to False) when `probe_will_fail` is
-    set — that's how we simulate "cable was yanked while the engine
-    was idle".
+    `probe()` is the explicit liveness call the health thread uses to
+    detect silent disconnects. It raises `CameraNotConnected` (and flips
+    the internal `_connected` flag to False) when `probe_will_fail` is
+    set — that's how we simulate "cable was yanked while the engine was
+    idle". `info()` only returns data and never doubles as the probe.
     """
 
     def __init__(self, *, connected_initially: bool = False,
@@ -32,8 +32,8 @@ class FlakyCamera:
         self._connect_succeeds_after = connect_succeeds_after
         self._raise_on_connect = raise_on_connect
         self.connect_calls = 0
-        self.info_calls = 0
-        # When True, the next `info()` call simulates a transport
+        self.probe_calls = 0
+        # When True, the next `probe()` call simulates a transport
         # error: flips `_connected` to False and raises.
         self.probe_will_fail = False
 
@@ -47,12 +47,16 @@ class FlakyCamera:
         if self.connect_calls > self._connect_succeeds_after:
             self._connected = True
 
-    def info(self) -> CameraInfo:
-        self.info_calls += 1
+    def probe(self) -> None:
+        self.probe_calls += 1
         if self.probe_will_fail:
             self._connected = False
             self.probe_will_fail = False  # one-shot
             raise CameraNotConnected("simulated USB drop during probe")
+        if not self._connected:
+            raise CameraNotConnected("not connected")
+
+    def info(self) -> CameraInfo:
         if not self._connected:
             raise CameraNotConnected("not connected")
         return CameraInfo(model="FLAKY", firmware="0", serial="0")
@@ -73,7 +77,7 @@ def _wait_for(predicate, timeout: float = 1.0, poll: float = 0.01) -> bool:
 
 class TestCameraHealth(unittest.TestCase):
     def test_probes_when_connected_does_not_reconnect(self):
-        # When connected, the thread probes via `info()` to detect
+        # When connected, the thread probes via `probe()` to detect
         # silent disconnects but does NOT call connect() again.
         cam = FlakyCamera(connected_initially=True)
         health = CameraHealth(cam, interval_s=0.05)
@@ -81,7 +85,7 @@ class TestCameraHealth(unittest.TestCase):
         try:
             time.sleep(0.18)
             self.assertEqual(cam.connect_calls, 0)
-            self.assertGreaterEqual(cam.info_calls, 2)
+            self.assertGreaterEqual(cam.probe_calls, 2)
         finally:
             health.shutdown()
 
