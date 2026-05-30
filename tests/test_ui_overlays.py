@@ -102,6 +102,20 @@ class TestOverlayFactories(unittest.TestCase):
         self.assertEqual(d.title, "Delete 'Totality'?")
         self.assertIsNone(d.body)
 
+    def test_save_confirm_default_has_no_body(self):
+        from fp_lapse.ui import save_confirm
+        d = save_confirm()
+        self.assertEqual(d.title, "Save changes?")
+        self.assertIsNone(d.body)
+
+    def test_save_confirm_with_warning_sets_body(self):
+        from fp_lapse.ui import save_confirm
+        d = save_confirm(warning="Note: start date is in the past — won't fire.")
+        self.assertEqual(d.title, "Save changes?")
+        self.assertEqual(
+            d.body, "Note: start date is in the past — won't fire.",
+        )
+
 
 class TestRenderOverlaySmoke(unittest.TestCase):
     def test_renders_320x240_rgb(self):

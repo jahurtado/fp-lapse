@@ -1,16 +1,12 @@
-"""Manage menu modal (§7.5 of docs/reference.md).
+"""TIME SETUP menu modal (prd2.md §6 — Time Setup menu).
 
-Submenu that opens with OK held ≥3 s on an existing configuration on
-the main screen. Four fixed actions:
+Opened by short-pressing LEFT on the main screen. Two items:
 
-    Edit · Duplicate · Delete · Cancel
+    Force NTP sync · Set manually
 
-Does not depend on the engine state (it can open in IDLE or RUNNING);
-it does NOT open over `+ New configuration` (§7.1).
-
-Same architecture as `overlays.py`: the module exposes a pure render
-that takes the `base` image (the screen that was behind) and a
-`ManageMenuState`, and returns a fresh 320x240 RGB image.
+Mirrors the structural conventions of `manage_menu.py` (shaded base,
+centered dialog, header, selection band). BACK closes the menu without
+any side effect.
 """
 
 from __future__ import annotations
@@ -27,11 +23,11 @@ from . import fonts, theme, widgets
 
 _BODY_PT: int = 11
 
-MENU_ITEMS: Tuple[str, ...] = ("Edit", "Duplicate", "Delete", "Cancel")
+MENU_ITEMS: Tuple[str, ...] = ("Force NTP sync", "Set manually")
 
-# Box geometry.
+# Box geometry — sized to wrap the two items + title comfortably.
 _BOX_W: int = 200
-_BOX_H: int = 130
+_BOX_H: int = 78
 _BOX_X: int = (WIDTH - _BOX_W) // 2
 _BOX_Y: int = (HEIGHT - _BOX_H) // 2
 
@@ -41,44 +37,55 @@ _SEPARATOR_Y: int = 28
 _ITEMS_TOP_Y: int = 38
 _ITEM_STRIDE: int = 18
 
-# Selection band inside the box (narrower than the box width).
 _BAND_LEFT_INSET: int = 4
 _BAND_RIGHT_INSET: int = 4
 _BAR_INNER_X: int = 7   # yellow bar width measured from _BOX_X + 4
 
 
 @dataclass(frozen=True)
-class ManageMenuState:
-    """Manage menu state: which config, which item is under the cursor."""
+class TimeSetupMenuState:
+    """Render state: which item is under the cursor.
 
-    config_name: str
-    cursor: int                      # 0..len(MENU_ITEMS)-1
+    `syncing_dots` (addendum A1) controls the in-progress feedback for
+    the Force NTP sync action. `None` means the menu is idle (existing
+    behaviour). When set to `1`, `2`, or `3`, the first menu item
+    renders as `Syncing` followed by that many `.`, with the cursor
+    highlight locked there — the App caller drives the animation by
+    cycling the value (typically via `time.monotonic()` modulo 3).
+    """
+
+    cursor: int                  # 0..len(MENU_ITEMS)-1
+    syncing_dots: Optional[int] = None
 
 
-def render_manage_menu(
-    base: Image.Image, state: ManageMenuState,
+def render_time_setup_menu(
+    base: Image.Image, state: TimeSetupMenuState,
 ) -> Image.Image:
-    """Compose the manage menu over `base`. Returns a fresh RGB 320x240 image."""
+    """Compose the TIME SETUP menu over `base`. Returns fresh RGB 320x240."""
     if not (0 <= state.cursor < len(MENU_ITEMS)):
         raise ValueError(
             f"cursor must be in [0, {len(MENU_ITEMS)}), got {state.cursor}"
+        )
+    if state.syncing_dots is not None and not (1 <= state.syncing_dots <= 3):
+        raise ValueError(
+            f"syncing_dots must be None or 1..3, got {state.syncing_dots}"
         )
 
     # Addendum G: opaque screen transition (see picker_datetime.py).
     rgba, draw = widgets.new_overlay_canvas(base)
     font = fonts.mono(_BODY_PT)
 
-    # Box
+    # Dialog box
     draw.rectangle(
         [_BOX_X, _BOX_Y, _BOX_X + _BOX_W, _BOX_Y + _BOX_H],
         fill=theme.DIALOG_BG,
         outline=theme.DIALOG_BORDER,
     )
 
-    # Header: config name + separator line.
+    # Title + separator
     draw.text(
         (_BOX_X + _HEADER_X_PAD, _BOX_Y + _HEADER_Y),
-        state.config_name, font=font, fill=theme.FG,
+        "TIME SETUP", font=font, fill=theme.FG,
     )
     draw.line(
         [
@@ -88,10 +95,19 @@ def render_manage_menu(
         fill=theme.SEP,
     )
 
-    # Items
+    # When syncing, the cursor highlight is locked on item 0 and that
+    # item renders the animated `Syncing<dots>` (addendum A1).
+    is_syncing = state.syncing_dots is not None
+    effective_cursor = 0 if is_syncing else state.cursor
+
     y = _BOX_Y + _ITEMS_TOP_Y
     for i, item in enumerate(MENU_ITEMS):
-        if i == state.cursor:
+        if i == 0 and is_syncing:
+            assert state.syncing_dots is not None  # narrowing for type
+            label = "Syncing" + ("." * state.syncing_dots)
+        else:
+            label = item
+        if i == effective_cursor:
             draw.rectangle(
                 [
                     _BOX_X + _BAND_LEFT_INSET, y - 1,
@@ -109,7 +125,7 @@ def render_manage_menu(
             text_color = theme.FG
         draw.text(
             (_BOX_X + _HEADER_X_PAD, y),
-            item, font=font, fill=text_color,
+            label, font=font, fill=text_color,
         )
         y += _ITEM_STRIDE
 
@@ -117,41 +133,36 @@ def render_manage_menu(
 
 
 # ----------------------------------------------------------------------
-# Manage menu interaction
+# Interaction
 # ----------------------------------------------------------------------
 
 
-class ManageMenuAction(str, Enum):
-    """Action selected from the manage menu (§7.5)."""
+class TimeSetupMenuAction(str, Enum):
+    """Action selected from the TIME SETUP menu (prd2.md §6)."""
 
-    EDIT = "edit"
-    DUPLICATE = "duplicate"
-    DELETE = "delete"
+    FORCE_NTP_SYNC = "force_ntp_sync"
+    SET_MANUALLY = "set_manually"
     CANCEL = "cancel"
 
 
-# Positional mapping: the order in MENU_ITEMS determines which action
-# each index corresponds to.
-_ACTION_BY_INDEX: Tuple[ManageMenuAction, ...] = (
-    ManageMenuAction.EDIT,
-    ManageMenuAction.DUPLICATE,
-    ManageMenuAction.DELETE,
-    ManageMenuAction.CANCEL,
+_ACTION_BY_INDEX: Tuple[TimeSetupMenuAction, ...] = (
+    TimeSetupMenuAction.FORCE_NTP_SYNC,
+    TimeSetupMenuAction.SET_MANUALLY,
 )
 assert len(_ACTION_BY_INDEX) == len(MENU_ITEMS)
 
 
-class ManageMenuInteraction:
-    """Manage menu cursor + button-to-action translation.
+class TimeSetupMenuInteraction:
+    """Cursor navigation + button-to-action translation.
 
-    BACK is equivalent to Cancel (§7.5: "BACK closes the menu without
-    action").
+    BACK is equivalent to Cancel (returns `TimeSetupMenuAction.CANCEL`).
+    LEFT/RIGHT do nothing inside the menu.
     """
 
     def __init__(self) -> None:
         self.cursor: int = 0
 
-    def on_press(self, button: ButtonId) -> Optional[ManageMenuAction]:
+    def on_press(self, button: ButtonId) -> Optional[TimeSetupMenuAction]:
         if button == ButtonId.UP:
             self.cursor = max(0, self.cursor - 1)
             return None
@@ -161,9 +172,9 @@ class ManageMenuInteraction:
         if button == ButtonId.OK:
             return _ACTION_BY_INDEX[self.cursor]
         if button == ButtonId.BACK:
-            return ManageMenuAction.CANCEL
-        return None  # LEFT/RIGHT don't apply in the menu
+            return TimeSetupMenuAction.CANCEL
+        return None  # LEFT/RIGHT don't apply
 
     def reset(self) -> None:
-        """Return the cursor to the first item (Edit)."""
+        """Return the cursor to the first item (Force NTP sync)."""
         self.cursor = 0

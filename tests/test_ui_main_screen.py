@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
 from fp_lapse.configs import Shot, TimelapseConfig  # noqa: E402
 from fp_lapse.display.iface import HEIGHT, WIDTH  # noqa: E402
 from fp_lapse.engine import EngineState  # noqa: E402
-from fp_lapse.ui import MainScreen, UIState  # noqa: E402
+from fp_lapse.ui import MainScreen, ScheduleIndicator, UIState  # noqa: E402
+from fp_lapse.ui.main_screen import footer_hint  # noqa: E402
 
 
 # Fixture data — tiene que casar 1:1 con lo que `docs/mockups/render_mockups.py`
@@ -245,6 +246,245 @@ class TestMainScreenVisualRegression(unittest.TestCase):
             ),
             "03_main_running_cursor_elsewhere",
         )
+
+
+class TestFooterHintScheduleAnnotation(unittest.TestCase):
+    """prd2.md §6.1: IDLE rows and the RUNNING-on-running row carry
+    `← time → sched`. Other RUNNING rows drop it. No row may mention
+    'trust' (the operator-facing label is `time`)."""
+
+    def _idle_state(self, cursor: int) -> UIState:
+        return UIState(
+            configs=(PARTIAL,),
+            cursor=cursor,
+            engine_state=EngineState.IDLE,
+            active_config_name=None,
+            shots_taken=0,
+            seconds_to_next_shot=None,
+            skips=0,
+            camera_connected=True,
+            wall_clock_str="18:42:07",
+        )
+
+    def _running_state(self, cursor: int) -> UIState:
+        return UIState(
+            configs=(PARTIAL, TOTALITY),
+            cursor=cursor,
+            engine_state=EngineState.RUNNING,
+            active_config_name="Partial",
+            shots_taken=10,
+            seconds_to_next_shot=4.3,
+            skips=0,
+            camera_connected=True,
+            wall_clock_str="18:42:07",
+        )
+
+    def test_idle_on_config_restores_hold_menu_hint(self):
+        """Addendum C: the IDLE-on-real-config row restores the
+        `hold OK menu` mention at the cost of the schedule annotation
+        (the two don't fit together in the 37-char budget)."""
+        h = footer_hint(self._idle_state(cursor=0))
+        self.assertIn("hold OK menu", h)
+        self.assertNotIn("← time", h)
+        self.assertNotIn("→ sched", h)
+        self.assertNotIn("trust", h.lower())
+
+    def test_idle_on_new_has_schedule_annotation(self):
+        # cursor=1 == "+ New" given 1 config. No menu applies on +New
+        # so the schedule annotation stays here for discoverability.
+        h = footer_hint(self._idle_state(cursor=1))
+        self.assertIn("← time", h)
+        self.assertIn("→ sched", h)
+
+    def test_running_on_running_has_schedule_annotation(self):
+        # cursor on the running config (index 0 == Partial). No menu
+        # applies on the running config; the schedule annotation stays.
+        h = footer_hint(self._running_state(cursor=0))
+        self.assertIn("← time", h)
+        self.assertIn("→ sched", h)
+
+    def test_running_off_running_drops_schedule(self):
+        h = footer_hint(self._running_state(cursor=1))
+        self.assertNotIn("← time", h)
+        self.assertNotIn("→ sched", h)
+        self.assertIn("OK switch", h)
+
+    def test_running_on_new_drops_schedule(self):
+        # cursor=2 == "+ New" given 2 configs.
+        h = footer_hint(self._running_state(cursor=2))
+        self.assertNotIn("← time", h)
+        self.assertIn("OK new", h)
+
+
+class TestScheduleIndicatorRegression(unittest.TestCase):
+    """Pixel-exact byte equality against the 07..10 mockups."""
+
+    def _state(self, ind: ScheduleIndicator) -> UIState:
+        return UIState(
+            configs=(PARTIAL, TOTALITY, FREE),
+            cursor=0,
+            engine_state=EngineState.IDLE,
+            active_config_name=None,
+            shots_taken=0,
+            seconds_to_next_shot=None,
+            skips=0,
+            camera_connected=True,
+            wall_clock_str="18:42:07",
+            schedule_state=ind,
+        )
+
+    def _check(self, name: str, ind: ScheduleIndicator) -> None:
+        expected_path = MOCKUPS_DIR / f"{name}.png"
+        self.assertTrue(expected_path.exists(), f"missing {expected_path}")
+        expected = Image.open(expected_path).convert("RGB")
+        actual = MainScreen().render(self._state(ind))
+        if actual.tobytes() != expected.tobytes():
+            out = _dump_artifacts(name, expected, actual)
+            self.fail(
+                f"{name}.png differs from production render — see {out}/{name}_*.png"
+            )
+
+    def test_07_off(self):
+        self._check("07_main_idle_schedule_off", ScheduleIndicator.OFF)
+
+    def test_08_red(self):
+        self._check("08_main_idle_schedule_red", ScheduleIndicator.RED)
+
+    def test_09_green(self):
+        self._check("09_main_idle_schedule_green", ScheduleIndicator.GREEN)
+
+    def test_10_yellow(self):
+        self._check("10_main_idle_schedule_yellow", ScheduleIndicator.YELLOW)
+
+
+class TestComputeScrollOffset(unittest.TestCase):
+    """Addendum I: stateless auto-scroll for the main-screen config list.
+    `_compute_scroll_offset(cursor, heights, visible_h)` returns the
+    smallest start index s.t. the cursor's block fits inside `visible_h`.
+    """
+
+    def _compute(self, *args, **kwargs):
+        from fp_lapse.ui.main_screen import _compute_scroll_offset
+        return _compute_scroll_offset(*args, **kwargs)
+
+    def test_no_scroll_when_everything_fits(self):
+        # Two small blocks + +New all fit in 200 px.
+        self.assertEqual(
+            self._compute(cursor=0, heights=[50, 50, 16], visible_h=200),
+            0,
+        )
+        self.assertEqual(
+            self._compute(cursor=2, heights=[50, 50, 16], visible_h=200),
+            0,
+        )
+
+    def test_scrolls_when_cursor_block_overflows(self):
+        # Three 80-px blocks + 16-px +New = 256 px, visible_h=200.
+        # Cursor on last config (index 2). Need to scroll past block 0
+        # so blocks 1..2 = 160 px fit.
+        self.assertEqual(
+            self._compute(cursor=2, heights=[80, 80, 80, 16], visible_h=200),
+            1,
+        )
+
+    def test_cursor_on_new_scrolls_to_show_it(self):
+        # Cursor on +New (index 3). Need start s.t. sum(heights[start:4]) <= 200.
+        # heights[1:4] = 80+80+16 = 176, fits. heights[0:4] = 256, no.
+        self.assertEqual(
+            self._compute(cursor=3, heights=[80, 80, 80, 16], visible_h=200),
+            1,
+        )
+
+    def test_scrolls_back_when_cursor_moves_up(self):
+        # Cursor on block 0 — start always 0.
+        self.assertEqual(
+            self._compute(cursor=0, heights=[80, 80, 80, 16], visible_h=200),
+            0,
+        )
+
+    def test_degenerate_block_larger_than_visible_clamps_to_cursor(self):
+        # A single block taller than the whole visible area — clamp to
+        # the cursor so the cursor's block at least renders from the top
+        # of the visible area (partial render below the footer line).
+        self.assertEqual(
+            self._compute(cursor=1, heights=[50, 250, 50], visible_h=200),
+            1,
+        )
+
+
+class TestMainScreenScrollIntegration(unittest.TestCase):
+    """Auto-scroll exercised through the public `MainScreen.render`."""
+
+    def _state(self, cursor: int, configs: tuple) -> UIState:
+        return UIState(
+            configs=configs,
+            cursor=cursor,
+            engine_state=EngineState.IDLE,
+            active_config_name=None,
+            shots_taken=0,
+            seconds_to_next_shot=None,
+            skips=0,
+            camera_connected=True,
+            wall_clock_str="00:47:55",
+        )
+
+    def _three_tall_configs(self):
+        from fp_lapse.schedule.moment import ScheduledMoment
+        from datetime import time as _time, date as _date
+        return (
+            TimelapseConfig(
+                "Noche", 30.0,
+                shots=(
+                    Shot(shutter=5.0, iso=100, aperture=2.8),
+                    Shot(shutter=1.0, iso=100, aperture=2.8),
+                    Shot(shutter=1/100, iso=100, aperture=2.8),
+                ),
+                start=ScheduledMoment(
+                    time=_time(4, 30, 0), date=_date(2026, 5, 30),
+                ),
+            ),
+            TimelapseConfig(
+                "Crepúsculo", 30.0,
+                shots=tuple(
+                    Shot(shutter=s, iso=100, aperture=8.0)
+                    for s in (5.0, 0.25, 1/60, 1/1000, 1/4000)
+                ),
+                start=ScheduledMoment(
+                    time=_time(6, 0, 0), date=_date(2026, 5, 30),
+                ),
+            ),
+            TimelapseConfig(
+                "Sol", 30.0,
+                shots=tuple(
+                    Shot(shutter=s, iso=100, aperture=22.0)
+                    for s in (1/8, 1/30, 1/200, 1/1000, 1/4000)
+                ),
+                start=ScheduledMoment(
+                    time=_time(6, 55, 0), date=_date(2026, 5, 30),
+                ),
+                end=ScheduledMoment(
+                    time=_time(8, 30, 0), date=_date(2026, 5, 30),
+                ),
+            ),
+        )
+
+    def test_cursor_on_overflowing_last_config_renders_different_from_cursor_on_first(self):
+        """If the three configs don't all fit, the render with cursor on
+        the last must differ from the render with cursor on the first —
+        the auto-scroll has hidden the first block."""
+        configs = self._three_tall_configs()
+        top = MainScreen().render(self._state(0, configs)).tobytes()
+        bottom = MainScreen().render(self._state(2, configs)).tobytes()
+        self.assertNotEqual(top, bottom)
+
+    def test_render_does_not_raise_for_long_config_list(self):
+        """The render path tolerates a list whose total height exceeds
+        the visible area without crashing."""
+        configs = self._three_tall_configs() * 3   # 9 configs — definitely overflows
+        # cursor anywhere in 0..len-1 must produce a valid 320×240 image.
+        for c in (0, len(configs) - 1, len(configs)):  # incl. + New
+            img = MainScreen().render(self._state(c, configs))
+            self.assertEqual(img.size, (WIDTH, HEIGHT))
 
 
 if __name__ == "__main__":

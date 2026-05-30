@@ -23,11 +23,13 @@ Operations that change the list (`_commit_edit`, `_duplicate`,
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
+import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import date as date_t, datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from PIL import Image
 
@@ -40,7 +42,17 @@ from .configs import (
     TimelapseConfig,
 )
 from .engine import EngineState
+from .schedule import (
+    SCHEDULE_STALE_THRESHOLD_S,
+    ScheduleEvaluator,
+    ScheduleStateStore,
+    SyncOutcome,
+    TimeSyncProber,
+    TrustedClock,
+)
+from .schedule.moment import ScheduledMoment
 from .ui import (
+    DateTimePickerInteraction,
     EditAction,
     EditScreen,
     EditScreenInteraction,
@@ -52,10 +64,17 @@ from .ui import (
     ManageMenuAction,
     ManageMenuInteraction,
     ManageMenuState,
+    PickerAction,
+    ScheduleIndicator,
+    TimeSetupMenuAction,
+    TimeSetupMenuInteraction,
+    TimeSetupMenuState,
     UIState,
     handle_overlay_button,
+    render_datetime_picker,
     render_manage_menu,
     render_overlay,
+    render_time_setup_menu,
     delete_confirm,
     discard_changes,
     save_confirm,
@@ -63,6 +82,42 @@ from .ui import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _default_timedatectl_runner(cmd: list[str]) -> None:
+    """Default runner for `timedatectl set-time …`.
+
+    Runs the subprocess with a short timeout and raises `subprocess
+    .CalledProcessError` on non-zero exit so `App.set_manual_time()`
+    can log a WARNING and bail out without touching the trusted clock.
+    """
+    subprocess.run(cmd, check=True, timeout=5)
+
+
+def _default_sync_worker_spawner(fn: Callable[[], None]) -> None:
+    """Default spawner for the force-NTP-sync worker (addendum A1).
+
+    Runs `fn` on a daemon thread so the UI thread never blocks on the
+    `timedatectl` subprocess. Tests inject a synchronous spawner that
+    runs `fn()` inline so the worker behaviour is deterministic.
+    """
+    threading.Thread(target=fn, daemon=True, name="sync-worker").start()
+
+
+def _past_date_warning(cfg: TimelapseConfig) -> Optional[str]:
+    """One-line warning when the draft has a past-dated start/end.
+
+    Used by `OVERLAY_SAVE` (prd2.md §6.2). Returns `None` when there
+    is no past date (the body of the save overlay stays empty).
+    """
+    today = date_t.today()
+    past_fields = [
+        label for label, m in (("start", cfg.start), ("end", cfg.end))
+        if m is not None and m.date is not None and m.date < today
+    ]
+    if not past_fields:
+        return None
+    return f"Note: {past_fields[0]} date is in the past — won't fire."
 
 
 class AppState(str, Enum):
@@ -73,6 +128,9 @@ class AppState(str, Enum):
     OVERLAY_SAVE = "overlay_save"
     OVERLAY_DISCARD = "overlay_discard"  # BACK in edit with pending changes
     OVERLAY_DELETE = "overlay_delete"    # Manage → Delete
+    # prd2.md §6 — schedule UI states.
+    TIME_SETUP = "time_setup"             # LEFT-press menu over main screen
+    PICKER = "picker"                     # digit picker (from edit or time setup)
 
 
 class App:
@@ -82,10 +140,18 @@ class App:
         scheduler,
         store: ConfigStore,
         camera: Camera,
+        now_monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.scheduler = scheduler
         self.store = store
         self.camera = camera
+        # Monotonic clock used by the schedule-indicator staleness
+        # check (and any future monotonic-time read inside `App`).
+        # Injectable so unit tests can drive the staleness window
+        # deterministically — matches the rest of the schedule stack
+        # (TrustedClock, TimeSyncProber) which already inject their
+        # own monotonic source.
+        self._now_monotonic: Callable[[], float] = now_monotonic
 
         # One lock for everything App-side. Held by:
         #   - GPIO callbacks (`on_press` / `on_release` / `on_long_press`)
@@ -106,6 +172,45 @@ class App:
 
         self._main_screen = MainScreen()
         self._edit_screen = EditScreen()
+
+        # Schedule wiring (prd2.md §7). Populated by `bind_schedule(...)`
+        # from `__main__.main()`. Until then, the schedule indicator is
+        # OFF, the wall clock reads from `datetime.now()`, and the LEFT
+        # menu still opens but its actions are no-ops because there is
+        # nothing to act on.
+        self.trusted_clock: Optional[TrustedClock] = None
+        self.time_sync_prober: Optional[TimeSyncProber] = None
+        self.schedule_evaluator: Optional[ScheduleEvaluator] = None
+        self.schedule_store: Optional[ScheduleStateStore] = None
+        self.schedule_enabled: bool = False
+        # Optional event the App sets after schedule-state mutations so
+        # the UI loop re-renders immediately (same idiom as the camera
+        # health thread). Wired by `bind_schedule(...)`.
+        self._dirty_event: Optional[threading.Event] = None
+        # Overlay interactions — exist only while their state is active.
+        self.time_setup_ix: Optional[TimeSetupMenuInteraction] = None
+        self.picker_ix: Optional[DateTimePickerInteraction] = None
+        # Force-NTP-sync feedback (addendum A1). True while the daemon
+        # worker spawned by `_dispatch_time_setup(FORCE_NTP_SYNC)` is
+        # running. Drives the TIME SETUP menu's animated "Syncing..."
+        # label and gates button presses in that state.
+        self._syncing: bool = False
+        # Monotonic timestamp when the current sync worker started.
+        # Used both for the dots animation (modulo 3 phase) and for the
+        # 10 s watchdog timeout.
+        self._syncing_started_mono: float = 0.0
+        # Indirection for spawning the worker so tests can intercept
+        # the thread creation (e.g. run synchronously). Default: a
+        # short-lived daemon thread.
+        self._sync_worker_spawner: Callable[[Callable[[], None]], None] = (
+            _default_sync_worker_spawner
+        )
+        # Indirection for `timedatectl set-time` so unit tests can spy
+        # on the call. Default implementation shells out (the systemd
+        # unit runs as root, so no `sudo` is needed).
+        self._timedatectl_runner: Callable[[list[str]], None] = (
+            _default_timedatectl_runner
+        )
 
     @property
     def engine(self):
@@ -152,6 +257,26 @@ class App:
                 r = handle_overlay_button(button)
                 if r is not None:
                     self._dispatch_overlay_delete(r)
+            elif self.state == AppState.TIME_SETUP:
+                if self.time_setup_ix is None:
+                    return
+                # Addendum A1: every button is inert while the sync
+                # worker is in flight — including BACK. The menu
+                # auto-closes when the worker finishes; the operator
+                # only needs to wait.
+                if self._syncing:
+                    return
+                r = self.time_setup_ix.on_press(button)
+                if r is not None:
+                    self._dispatch_time_setup(r)
+            elif self.state == AppState.PICKER:
+                if self.picker_ix is None:
+                    return
+                r = self.picker_ix.on_press(button)
+                if r is PickerAction.SAVE:
+                    self._dispatch_picker_save()
+                elif r is PickerAction.CANCEL:
+                    self._dispatch_picker_cancel()
 
     def on_release(self, button) -> None:
         with self.lock:
@@ -200,9 +325,37 @@ class App:
             if self.state == AppState.OVERLAY_STOP:
                 return render_overlay(main_img, stop_confirm())
             if self.state == AppState.OVERLAY_SAVE and self.edit_ix is not None:
-                return render_overlay(self._render_edit_image(), save_confirm())
+                warning = _past_date_warning(self.edit_ix.draft)
+                return render_overlay(
+                    self._render_edit_image(),
+                    save_confirm(warning=warning),
+                )
             if self.state == AppState.OVERLAY_DISCARD and self.edit_ix is not None:
                 return render_overlay(self._render_edit_image(), discard_changes())
+            if self.state == AppState.TIME_SETUP:
+                return render_time_setup_menu(
+                    main_img,
+                    TimeSetupMenuState(
+                        cursor=(
+                            self.time_setup_ix.cursor
+                            if self.time_setup_ix is not None else 0
+                        ),
+                        syncing_dots=self._compute_syncing_dots(),
+                    ),
+                )
+            if self.state == AppState.PICKER and self.picker_ix is not None:
+                # Pickers launched from edit sit over the edit screen;
+                # the system-clock picker sits over the main screen.
+                if self.picker_ix.target_field in ("start", "end") \
+                        and self.edit_ix is not None:
+                    base = self._render_edit_image()
+                    title = f"Edit · {self.edit_ix.draft.name} · {self.picker_ix.target_field}"
+                else:
+                    base = main_img
+                    title = "Set system clock"
+                return render_datetime_picker(
+                    base, self.picker_ix.state, title=title,
+                )
             if self.state == AppState.OVERLAY_DELETE:
                 # Overlay sits on top of the manage menu the user came from.
                 manage_img = render_manage_menu(
@@ -233,6 +386,17 @@ class App:
 
     def _render_main_screen(self) -> Image.Image:
         status = self.engine.status()
+        # prd2.md §7: when a TrustedClock baseline exists, the visible
+        # wall clock comes from `trusted_clock.now()` so the operator
+        # sees exactly the time the schedule engine is firing on. With
+        # no baseline (pre-first-sync) we fall back to `datetime.now()`
+        # so first boot still renders something sensible.
+        trusted_dt = (
+            self.trusted_clock.now()
+            if self.trusted_clock is not None and self.trusted_clock.has_baseline
+            else None
+        )
+        wall_str = (trusted_dt or datetime.now()).strftime("%H:%M:%S")
         return self._main_screen.render(UIState(
             configs=tuple(self.configs),
             cursor=self.main_ix.cursor,
@@ -242,13 +406,14 @@ class App:
             seconds_to_next_shot=status.seconds_to_next_shot,
             skips=status.skips,
             camera_connected=self.camera.is_connected(),
-            wall_clock_str=datetime.now().strftime("%H:%M:%S"),
+            wall_clock_str=wall_str,
             camera_not_responding=(
                 status.consecutive_failures >= self._CAMERA_DOWN_THRESHOLD
             ),
             configs_reset=self._configs_reset,
             camera_model_label=self._camera_model_label(),
             dial_mismatch=self._camera_dial_mismatch(),
+            schedule_state=self._compute_schedule_indicator(),
         ))
 
     def _camera_model_label(self) -> str:
@@ -297,6 +462,12 @@ class App:
             self.edit_ix = EditScreenInteraction(self._new_config())
             self.main_ix.reset_input()
             self.state = AppState.EDIT
+        elif r.kind == MainAction.TOGGLE_SCHEDULE:
+            self.toggle_schedule()
+        elif r.kind == MainAction.OPEN_TIME_SETUP:
+            self.time_setup_ix = TimeSetupMenuInteraction()
+            self.main_ix.reset_input()
+            self.state = AppState.TIME_SETUP
 
     def _dispatch_edit(self, action: EditAction) -> None:
         if action == EditAction.SAVE and self.edit_ix is not None:
@@ -305,6 +476,18 @@ class App:
             # saving is irreversible and the spec favours safety over
             # speed.
             self.state = AppState.OVERLAY_SAVE
+            return
+        if action in (EditAction.OPEN_PICKER_START, EditAction.OPEN_PICKER_END) \
+                and self.edit_ix is not None:
+            # prd2.md §6.2: OK on a START/END row opens the digit
+            # picker in the field's current sub-mode.
+            field = "start" if action == EditAction.OPEN_PICKER_START else "end"
+            initial = getattr(self.edit_ix.draft, field)
+            self.picker_ix = DateTimePickerInteraction(
+                target_field=field,
+                initial_value=initial,
+            )
+            self.state = AppState.PICKER
             return
         if (
             action == EditAction.BACK
@@ -371,6 +554,352 @@ class App:
         if ok:
             self.scheduler.cmd_stop()
         self.state = AppState.MAIN
+
+    # -- Sync feedback (prd2.md addendum A1) ----------------------------
+
+    # Hard timeout for the force-NTP-sync worker. If `timedatectl` or
+    # the prober hang, the watchdog clears the syncing flag, closes the
+    # menu and surfaces a WARNING in the log. 10 s is comfortably above
+    # the typical 1–5 s subprocess duration without making the operator
+    # wait too long on a true failure.
+    _SYNC_WORKER_TIMEOUT_S: float = 10.0
+
+    def _start_sync_worker(self) -> None:
+        """Kick off the daemon worker that runs the NTP-sync sequence.
+
+        Idempotent: a second call while a sync is already in flight
+        is a no-op. Sets `_syncing` and records the start time BEFORE
+        spawning so the next UI render already shows "Syncing.".
+        """
+        if self._syncing:
+            return
+        self._syncing = True
+        self._syncing_started_mono = time.monotonic()
+        self._notify_dirty()
+        self._sync_worker_spawner(self._run_sync_worker)
+
+    def _run_sync_worker(self) -> None:
+        """Body of the force-NTP-sync worker (addendum A1).
+
+        Runs OFF the UI thread. The sequence is: arm the trusted-clock
+        force flag, run the OS-level sync request (blocking
+        subprocess), then force an immediate prober poll so the new
+        TimeUSec is observed before the next routine 60 s tick. A 10 s
+        watchdog bounds the whole flow.
+
+        On exit (success, failure, or timeout): clears `_syncing`,
+        transitions back to MAIN if still in TIME_SETUP, sets
+        `dirty_event`.
+        """
+        try:
+            with self.lock:
+                tc = self.trusted_clock
+                pr = self.time_sync_prober
+            if tc is not None:
+                tc.force_trust_next_sync()
+            if pr is not None:
+                # Each step is best-effort; logged + swallowed on
+                # failure. Watchdog covers the case where one of
+                # these hangs.
+                if not self._sync_timed_out():
+                    try:
+                        pr.request_force_sync()
+                    except Exception:
+                        logger.exception(
+                            "sync worker: request_force_sync raised",
+                        )
+                if not self._sync_timed_out():
+                    try:
+                        pr.force_poll()
+                    except Exception:
+                        logger.exception(
+                            "sync worker: force_poll raised",
+                        )
+            if self._sync_timed_out():
+                logger.warning(
+                    "sync worker: exceeded %.1f s budget — closing menu",
+                    self._SYNC_WORKER_TIMEOUT_S,
+                )
+        except Exception:
+            logger.exception("sync worker: unexpected exception")
+        finally:
+            with self.lock:
+                self._syncing = False
+                if self.state == AppState.TIME_SETUP:
+                    self.state = AppState.MAIN
+                    self.time_setup_ix = None
+            self._notify_dirty()
+
+    def _sync_timed_out(self) -> bool:
+        return (
+            time.monotonic() - self._syncing_started_mono
+            > self._SYNC_WORKER_TIMEOUT_S
+        )
+
+    def _compute_syncing_dots(self) -> Optional[int]:
+        """Animation phase for the TIME SETUP "Syncing..." label.
+
+        Returns `None` when not syncing. Otherwise cycles `1 → 2 → 3
+        → 1 → …` at ~2 Hz, driven by the wall-monotonic delta from the
+        worker's start time. The UI loop's 250 ms idle timeout ensures
+        the animation advances even when no other dirty events fire.
+        """
+        if not self._syncing:
+            return None
+        delta = time.monotonic() - self._syncing_started_mono
+        # 2 Hz cycle, three phases.
+        return int((delta * 2) % 3) + 1
+
+    # -- Schedule dispatch & helpers (prd2.md §7) ------------------------
+
+    def _dispatch_time_setup(self, action: TimeSetupMenuAction) -> None:
+        if action == TimeSetupMenuAction.FORCE_NTP_SYNC:
+            # Addendum A1: kick off a daemon worker so the UI thread
+            # is never blocked on `timedatectl`. The menu stays open
+            # and shows "Syncing..." until the worker completes (or
+            # the 10 s watchdog fires); only then do we transition
+            # back to MAIN.
+            self._start_sync_worker()
+            return
+        if action == TimeSetupMenuAction.SET_MANUALLY:
+            # Pre-populate the picker with the current best time
+            # (trusted clock if available, else OS clock).
+            if self.trusted_clock is not None:
+                initial = self.trusted_clock.now() or datetime.now()
+            else:
+                initial = datetime.now()
+            self.picker_ix = DateTimePickerInteraction(
+                target_field="system_clock",
+                initial_value=ScheduledMoment(
+                    time=initial.time().replace(microsecond=0),
+                    date=initial.date(),
+                ),
+            )
+            self.state = AppState.PICKER
+            self.time_setup_ix = None
+            return
+        # CANCEL — no side effect.
+        self.state = AppState.MAIN
+        self.time_setup_ix = None
+
+    def _dispatch_picker_save(self) -> None:
+        """Picker OK with valid digits — route the moment.
+
+        For `target_field in ("start", "end")` the moment lands on the
+        edit draft via `dataclasses.replace`. Addendum F: if the picker
+        was in NONE mode (chip = `[—]`), the moment is "cleared" —
+        the field becomes `None`. For `"system_clock"` the moment is
+        collapsed to a `datetime` and handed to `set_manual_time`.
+        Both paths clear the picker and return to the screen that
+        launched it.
+        """
+        assert self.picker_ix is not None
+        field = self.picker_ix.target_field
+        # Addendum F: NONE mode = "clear the field". The App reads
+        # `is_clear_request` BEFORE calling `commit()` so the two
+        # meanings of `commit() == None` (NONE vs. validation error)
+        # stay disambiguated.
+        if self.picker_ix.is_clear_request:
+            if field in ("start", "end") and self.edit_ix is not None:
+                self.edit_ix.draft = replace(
+                    self.edit_ix.draft, **{field: None},
+                )
+            self.picker_ix = None
+            self.state = AppState.EDIT
+            return
+        new_moment = self.picker_ix.commit()
+        if new_moment is None:
+            # commit() failed validation — `on_press` only got SAVE
+            # because `_try_save` already returned SAVE; defensive
+            # guard.
+            return
+        if field in ("start", "end") and self.edit_ix is not None:
+            self.edit_ix.draft = replace(
+                self.edit_ix.draft, **{field: new_moment},
+            )
+            self.picker_ix = None
+            self.state = AppState.EDIT
+        elif field == "system_clock":
+            assert new_moment.date is not None  # forced for system_clock
+            dt = datetime.combine(new_moment.date, new_moment.time)
+            self.set_manual_time(dt)
+            self.picker_ix = None
+            self.state = AppState.MAIN
+        else:
+            # Unknown target — close defensively.
+            self.picker_ix = None
+            self.state = AppState.MAIN
+
+    def _dispatch_picker_cancel(self) -> None:
+        assert self.picker_ix is not None
+        return_to = (
+            AppState.MAIN if self.picker_ix.target_field == "system_clock"
+            else AppState.EDIT
+        )
+        self.picker_ix = None
+        self.state = return_to
+
+    # -- Schedule binding & providers ------------------------------------
+
+    def bind_schedule(
+        self,
+        *,
+        trusted_clock: TrustedClock,
+        time_sync_prober: TimeSyncProber,
+        schedule_evaluator: ScheduleEvaluator,
+        schedule_store: ScheduleStateStore,
+        initial_enabled: bool,
+        dirty_event: Optional[threading.Event] = None,
+    ) -> None:
+        """Install the schedule trio on the App.
+
+        Called once from `__main__.main()` after the scheduler and
+        camera-health threads are running. Idempotent in the sense
+        that calling it twice is harmless (replaces the references).
+        """
+        with self.lock:
+            self.trusted_clock = trusted_clock
+            self.time_sync_prober = time_sync_prober
+            self.schedule_evaluator = schedule_evaluator
+            self.schedule_store = schedule_store
+            self.schedule_enabled = bool(initial_enabled)
+            self._dirty_event = dirty_event
+
+    def snapshot_configs(self) -> List[TimelapseConfig]:
+        """Thread-safe copy of the current config list.
+
+        Used as `configs_provider` for `ScheduleEvaluator`. The copy
+        ensures the evaluator does not observe a half-mutated list
+        while the App is in the middle of `_commit_edit` / `_delete`.
+        """
+        with self.lock:
+            return list(self.configs)
+
+    def is_schedule_enabled(self) -> bool:
+        with self.lock:
+            return self.schedule_enabled
+
+    def active_config_name(self) -> Optional[str]:
+        """Name of the engine's currently active config (or None).
+
+        Used as `active_config_name_provider` for `ScheduleEvaluator`.
+        """
+        with self.lock:
+            cfg = self.engine.active_config
+            return cfg.name if cfg is not None else None
+
+    def toggle_schedule(self) -> None:
+        """Flip the persisted schedule_enabled flag.
+
+        Mutates under `self.lock`. Persists synchronously (the store
+        write is small). Sets the dirty event so the UI redraws and the
+        evaluator picks up the new flag on the next tick.
+        """
+        with self.lock:
+            self.schedule_enabled = not self.schedule_enabled
+            if self.schedule_store is not None:
+                try:
+                    self.schedule_store.save(self.schedule_enabled)
+                except Exception:
+                    logger.exception("toggle_schedule: store.save raised")
+            logger.info("schedule toggled to %s", self.schedule_enabled)
+        self._notify_dirty()
+
+    def force_trust_next_sync(self) -> None:
+        """Arm the trusted-clock force flag, then nudge the prober.
+
+        Order matters: setting the flag BEFORE the OS sync ensures any
+        sync that lands while we are still in the middle of this method
+        is interpreted as FORCED.
+        """
+        with self.lock:
+            if self.trusted_clock is not None:
+                self.trusted_clock.force_trust_next_sync()
+            prober = self.time_sync_prober
+        if prober is not None:
+            prober.request_force_sync()
+        self._notify_dirty()
+
+    def on_sync_observed(self, wall_now: datetime) -> None:
+        """Callback wired into `TimeSyncProber.on_sync`.
+
+        Logs the outcome, sets the dirty event, and — crucially —
+        calls `schedule_evaluator.reset_frontier()` on FIRST_SYNC or
+        FORCED so the evaluator reseeds against the freshly-anchored
+        baseline (see `implementation-notes.md` — this closes the
+        deviation flagged during prd.md). ACCEPTED / REJECTED leave the
+        frontier alone (the baseline either moved by a tiny envelope-
+        sized amount or was rejected outright).
+        """
+        with self.lock:
+            if self.trusted_clock is None:
+                return
+            outcome = self.trusted_clock.on_sync_observed(wall_now)
+            logger.info(
+                "on_sync_observed: outcome=%s wall=%s",
+                outcome.value, wall_now.isoformat(),
+            )
+            if outcome in (SyncOutcome.FIRST_SYNC, SyncOutcome.FORCED) \
+                    and self.schedule_evaluator is not None:
+                self.schedule_evaluator.reset_frontier()
+        self._notify_dirty()
+
+    def set_manual_time(self, entered_dt: datetime) -> None:
+        """Manual time entry commit path (from the Time Setup menu's
+        "Set manually" option).
+
+        Sets the OS clock via `timedatectl set-time` then anchors the
+        trusted baseline as FORCED. Subprocess failures are logged at
+        WARNING and the trusted clock is NOT touched (so a botched
+        clock change does not silently re-anchor the baseline).
+        """
+        cmd_arg = entered_dt.strftime("%Y-%m-%d %H:%M:%S")
+        logger.info("set_manual_time: requesting timedatectl set-time '%s'",
+                    cmd_arg)
+        with self.lock:
+            try:
+                self._timedatectl_runner(["timedatectl", "set-time", cmd_arg])
+            except Exception as e:
+                logger.warning(
+                    "set_manual_time: timedatectl failed (%s) — "
+                    "OS clock and trusted clock unchanged", e,
+                )
+                return
+            if self.trusted_clock is not None:
+                self.trusted_clock.force_trust_next_sync()
+                outcome = self.trusted_clock.on_sync_observed(entered_dt)
+                logger.info(
+                    "set_manual_time: trusted clock outcome=%s", outcome.value,
+                )
+                if outcome in (SyncOutcome.FIRST_SYNC, SyncOutcome.FORCED) \
+                        and self.schedule_evaluator is not None:
+                    self.schedule_evaluator.reset_frontier()
+        self._notify_dirty()
+
+    def _compute_schedule_indicator(self) -> ScheduleIndicator:
+        """Map the schedule + trusted-clock state to a colored dot.
+
+        Pure function of `self.schedule_enabled`, `trusted_clock` and
+        `time_sync_prober`. Called under `self.lock` by the renderer.
+        """
+        if not self.schedule_enabled:
+            return ScheduleIndicator.OFF
+        if self.trusted_clock is None or not self.trusted_clock.has_baseline:
+            return ScheduleIndicator.RED
+        if self.trusted_clock.is_glitched:
+            return ScheduleIndicator.YELLOW
+        last_mono = (
+            self.time_sync_prober.last_successful_sync_at_monotonic()
+            if self.time_sync_prober is not None else None
+        )
+        if last_mono is None \
+                or (self._now_monotonic() - last_mono) > SCHEDULE_STALE_THRESHOLD_S:
+            return ScheduleIndicator.YELLOW
+        return ScheduleIndicator.GREEN
+
+    def _notify_dirty(self) -> None:
+        if self._dirty_event is not None:
+            self._dirty_event.set()
 
     # -- Mutations -------------------------------------------------------
 

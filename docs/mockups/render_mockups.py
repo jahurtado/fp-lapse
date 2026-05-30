@@ -21,13 +21,25 @@ from PIL import Image, ImageDraw, ImageFont
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parents[1] / "src"))
 
+from datetime import date as _date_t, time as _time_t  # noqa: E402
+
 from fp_lapse.configs import Shot, TimelapseConfig  # noqa: E402
 from fp_lapse.engine import EngineState  # noqa: E402
+from fp_lapse.schedule.moment import ScheduledMoment  # noqa: E402
 from fp_lapse.ui.edit_screen import EditScreen, EditState  # noqa: E402
 from fp_lapse.ui.main_screen import MainScreen, UIState  # noqa: E402
 from fp_lapse.ui.manage_menu import ManageMenuState  # noqa: E402
 from fp_lapse.ui.manage_menu import render_manage_menu as _render_manage_menu  # noqa: E402
-from fp_lapse.ui.overlays import render_overlay, stop_confirm  # noqa: E402
+from fp_lapse.ui.overlays import render_overlay, save_confirm, stop_confirm  # noqa: E402
+from fp_lapse.ui.picker_datetime import (  # noqa: E402
+    DateTimePickerInteraction,
+    render_datetime_picker,
+)
+from fp_lapse.ui.schedule_indicator import ScheduleIndicator  # noqa: E402
+from fp_lapse.ui.time_setup_menu import (  # noqa: E402
+    TimeSetupMenuState,
+    render_time_setup_menu,
+)
 
 W, H = 320, 240
 
@@ -293,6 +305,156 @@ def render_manage_menu():
     )
 
 
+# ----------------------------------------------------------------------
+# prd2.md §6 — schedule UI mockups
+# ----------------------------------------------------------------------
+
+
+def _render_main_idle_with_schedule(state: ScheduleIndicator):
+    """Main IDLE rendered with the given schedule indicator state."""
+    return MainScreen().render(UIState(
+        configs=(_PARTIAL, _TOTALITY, _FREE),
+        cursor=0,
+        engine_state=EngineState.IDLE,
+        active_config_name=None,
+        shots_taken=0,
+        seconds_to_next_shot=None,
+        skips=0,
+        camera_connected=True,
+        wall_clock_str="18:42:07",
+        schedule_state=state,
+    ))
+
+
+def render_main_idle_schedule_off():
+    return _render_main_idle_with_schedule(ScheduleIndicator.OFF)
+
+
+def render_main_idle_schedule_red():
+    return _render_main_idle_with_schedule(ScheduleIndicator.RED)
+
+
+def render_main_idle_schedule_green():
+    return _render_main_idle_with_schedule(ScheduleIndicator.GREEN)
+
+
+def render_main_idle_schedule_yellow():
+    return _render_main_idle_with_schedule(ScheduleIndicator.YELLOW)
+
+
+def render_edit_with_schedule():
+    """Edit screen with START and END moments set, cursor on `start`."""
+    cfg = TimelapseConfig(
+        name="Totality",
+        interval_s=5.0,
+        shots=(
+            Shot(shutter=1 / 500, iso=400, aperture=None),
+            Shot(shutter=1 / 125, iso=400, aperture=None),
+            Shot(shutter=1 / 30, iso=400, aperture=None),
+            Shot(shutter=1 / 8, iso=400, aperture=None),
+            Shot(shutter=2.0, iso=1600, aperture=None),
+        ),
+        start=ScheduledMoment(
+            time=_time_t(11, 33, 23),
+            date=_date_t(2026, 8, 12),
+        ),
+        end=ScheduledMoment(
+            time=_time_t(11, 36, 9),
+            date=_date_t(2026, 8, 12),
+        ),
+    )
+    # field_cursor=3 = "start" (after name/interval/shots).
+    return EditScreen().render(EditState(cfg=cfg, field_cursor=3, scroll_offset=0))
+
+
+def render_picker_datetime():
+    """Picker in DATE_TIME mode pre-populated with the eclipse start."""
+    base = render_edit_with_schedule()
+    picker = DateTimePickerInteraction(
+        target_field="start",
+        initial_value=ScheduledMoment(
+            time=_time_t(11, 33, 23),
+            date=_date_t(2026, 8, 12),
+        ),
+    )
+    # Place the cursor on the minutes-tens digit (cell index 10 in
+    # the DATE_TIME layout YYYY-MM-DD HH:MM:SS — see picker_datetime
+    # `_layout_template`).
+    for _ in range(10):
+        from fp_lapse.buttons.iface import ButtonId  # local import — small CLI
+        picker.on_press(ButtonId.RIGHT)
+    return render_datetime_picker(
+        base, picker.state, title="Edit · Totality · start",
+    )
+
+
+def render_overlay_save_with_warning():
+    """Save overlay with the past-date warning body line."""
+    cfg = TimelapseConfig(
+        name="Totality", interval_s=5.0,
+        shots=(Shot(shutter=1 / 500, iso=400, aperture=None),),
+        start=ScheduledMoment(
+            time=_time_t(11, 33, 23),
+            date=_date_t(2020, 8, 12),   # well in the past
+        ),
+    )
+    base = EditScreen().render(EditState(cfg=cfg, field_cursor=3, scroll_offset=0))
+    return render_overlay(
+        base,
+        save_confirm(warning="Note: start date is in the past — won't fire."),
+    )
+
+
+def render_main_idle_time_setup_menu():
+    """TIME SETUP menu overlay over a schedule-GREEN main screen."""
+    base = render_main_idle_schedule_green()
+    return render_time_setup_menu(base, TimeSetupMenuState(cursor=0))
+
+
+def render_main_idle_with_scheduled_configs():
+    """Addendum E: main IDLE view showing per-config start/end lines.
+
+    Three configs to exercise every schedule-line shape:
+      - `Partial-1`: one-shot start only.
+      - `Totality`: one-shot start + end on the same day (collapsed
+        single-line rendering with the date shown once).
+      - `Sunrise loop`: daily moments (time-only, no date).
+    """
+    from datetime import date as _date, time as _time
+    eclipse_day = _date(2026, 8, 12)
+    p1 = TimelapseConfig(
+        name="Partial-1", interval_s=10.0,
+        shots=(Shot(shutter=1 / 1000, iso=200, aperture=None),),
+        start=ScheduledMoment(time=_time(10, 0, 0), date=eclipse_day),
+    )
+    tot = TimelapseConfig(
+        name="Totality", interval_s=5.0,
+        shots=(
+            Shot(shutter=1 / 500, iso=400, aperture=None),
+            Shot(shutter=1 / 30, iso=400, aperture=None),
+        ),
+        start=ScheduledMoment(time=_time(11, 33, 23), date=eclipse_day),
+        end=ScheduledMoment(time=_time(11, 36, 9), date=eclipse_day),
+    )
+    daily = TimelapseConfig(
+        name="Sunrise loop", interval_s=30.0, shots=(),
+        start=ScheduledMoment(time=_time(7, 0, 0)),
+        end=ScheduledMoment(time=_time(19, 0, 0)),
+    )
+    return MainScreen().render(UIState(
+        configs=(p1, tot, daily),
+        cursor=1,
+        engine_state=EngineState.IDLE,
+        active_config_name=None,
+        shots_taken=0,
+        seconds_to_next_shot=None,
+        skips=0,
+        camera_connected=True,
+        wall_clock_str="09:55:12",
+        schedule_state=ScheduleIndicator.GREEN,
+    ))
+
+
 # Main ----------------------------------------------------------------
 OUT = Path(__file__).parent
 
@@ -310,6 +472,17 @@ def main():
     save(render_edit(),                     "04_edit")
     save(render_overlay_stop(),             "05_overlay_stop_confirm")
     save(render_manage_menu(),              "06_manage_menu")
+    # prd2.md §6 — schedule UI mockups.
+    save(render_main_idle_schedule_off(),     "07_main_idle_schedule_off")
+    save(render_main_idle_schedule_red(),     "08_main_idle_schedule_red")
+    save(render_main_idle_schedule_green(),   "09_main_idle_schedule_green")
+    save(render_main_idle_schedule_yellow(),  "10_main_idle_schedule_yellow")
+    save(render_edit_with_schedule(),         "11_edit_with_schedule")
+    save(render_picker_datetime(),            "12_picker_datetime")
+    save(render_overlay_save_with_warning(),  "13_overlay_save_with_warning")
+    save(render_main_idle_time_setup_menu(),  "14_main_idle_time_setup_menu")
+    save(render_main_idle_with_scheduled_configs(),
+         "15_main_idle_with_scheduled_configs")
     print("Done.")
 
 

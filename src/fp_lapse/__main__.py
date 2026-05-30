@@ -35,11 +35,17 @@ from typing import Optional
 from .app import App
 from .buttons.iface import ButtonId
 from .camera_health import CameraHealth
-from .config import CONFIGS_FILE
+from .config import CONFIGS_FILE, SCHEDULE_STATE_FILE
 from .configs import ConfigStore
 from .engine import Engine
 from .engine_scheduler import EngineScheduler
 from .logging_setup import setup_logging
+from .schedule import (
+    ScheduleEvaluator,
+    ScheduleStateStore,
+    TimeSyncProber,
+    TrustedClock,
+)
 
 logger = logging.getLogger("fp_lapse")
 
@@ -253,6 +259,34 @@ def main() -> int:
     # wired in.
     camera_health = CameraHealth(camera, dirty_event=dirty_event)
     camera_health.start()
+
+    # Schedule trio (prd2.md §7). The prober and the evaluator have no
+    # threads of their own — they are driven inline from the UI loop
+    # body below. `on_sync` is a synchronous callback that fires on
+    # the calling thread (the UI thread).
+    schedule_store = ScheduleStateStore(SCHEDULE_STATE_FILE)
+    schedule_enabled = schedule_store.load()
+    trusted_clock = TrustedClock()
+    time_sync_prober = TimeSyncProber(
+        on_sync=lambda wall_now: app.on_sync_observed(wall_now),
+    )
+    schedule_evaluator = ScheduleEvaluator(
+        scheduler=scheduler,
+        trusted_clock=trusted_clock,
+        configs_provider=app.snapshot_configs,
+        schedule_enabled_provider=app.is_schedule_enabled,
+        active_config_name_provider=app.active_config_name,
+        dirty_event=dirty_event,
+    )
+    app.bind_schedule(
+        trusted_clock=trusted_clock,
+        time_sync_prober=time_sync_prober,
+        schedule_evaluator=schedule_evaluator,
+        schedule_store=schedule_store,
+        initial_enabled=schedule_enabled,
+        dirty_event=dirty_event,
+    )
+
     logger.info("UI loop started (dirty timeout %.0f ms)", UI_REFRESH_TIMEOUT_S * 1000)
     try:
         # Initial paint so the screen isn't black until the first event.
@@ -262,6 +296,19 @@ def main() -> int:
             dirty_event.clear()
             if shutdown_event.is_set():
                 break
+            # Schedule layer (prd2.md §7) ticks inline on every UI
+            # iteration, BEFORE the render so any state change shows
+            # up immediately. Both calls are non-blocking; the prober
+            # gates its `timedatectl` subprocess to at most once per
+            # 60 s. Both are wrapped in a single try/except so a
+            # transient raise (e.g. a provider error in the evaluator)
+            # doesn't escape and exit the main loop — same idiom as
+            # `engine_scheduler._run()`.
+            try:
+                time_sync_prober.maybe_poll()
+                schedule_evaluator.tick()
+            except Exception:
+                logger.exception("schedule tick raised — continuing")
             frame = app.render()
             display.blit(frame)
     finally:

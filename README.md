@@ -420,6 +420,45 @@ bump in `pyproject.toml`, also run `make sync` so the Pi's installed
 package metadata refreshes (otherwise `importlib.metadata` reports the
 old version).
 
+### 9. Field setup — register your phone hotspot as a fallback Wi-Fi
+
+Trixie ships **NetworkManager**, which supports multiple stored Wi-Fi
+profiles and auto-connects to whichever is in range. The scheduled-
+configurations feature relies on a one-time NTP sync at boot (the Pi
+has no RTC), so when you take the rig out to the field — far from your
+home network — you want the Pi to associate with your phone's hotspot
+without anyone touching a config file.
+
+Register the hotspot once, over SSH:
+
+```bash
+ssh pi3 'sudo nmcli connection add \
+    type wifi ifname wlan0 \
+    con-name "iphone-hotspot" \
+    ssid "Your-Hotspot-SSID" \
+    wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.psk "your-hotspot-password" \
+    connection.autoconnect yes \
+    connection.autoconnect-priority 10'
+```
+
+A few notes:
+
+- `con-name` is the local label; `ssid` is what the phone broadcasts.
+- `connection.autoconnect-priority` only matters when **both** the
+  home Wi-Fi and the hotspot are in range simultaneously — higher
+  value wins. In the field only the hotspot is around, so any value
+  works; pick one that reflects your preference.
+- Confirm what's registered: `ssh pi3 'nmcli connection show'`.
+- Delete an entry by name: `ssh pi3 'sudo nmcli connection delete iphone-hotspot'`.
+
+That's the whole setup. The scheduling feature surfaces its own
+clock-sync state in the status bar (colored dot next to the clock
+glyph) and offers a `TIME SETUP` menu (LEFT button on the main
+screen) so you can force a re-sync or set the time manually if no
+network is available — see `docs/reference.md` for the operator-facing
+flow.
+
 ---
 
 ## Hardware and pin map

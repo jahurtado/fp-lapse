@@ -49,6 +49,7 @@ from ..buttons.iface import ButtonId
 from ..configs import MAX_SHOTS_PER_BRACKET, Shot, TimelapseConfig
 from ..display.iface import HEIGHT, WIDTH, new_canvas
 from . import fonts, theme, widgets
+from ..schedule.moment import ScheduledMoment
 from .edit_values import (
     APERTURE_VALUES,
     INTERVALS_S,
@@ -63,7 +64,10 @@ from .edit_values import (
 _BODY_PT: int = 11
 
 # After which indices (in the flat editable list) a spacer is inserted.
-_SPACER_AFTER = frozenset({1, 2})
+# prd2.md §6.2: the schedule pair `start`/`end` (indices 3 and 4) sits
+# between `shots` and the first per-shot row, fenced by spacers on both
+# sides so the editor reads as three groups (header / schedule / shots).
+_SPACER_AFTER = frozenset({1, 2, 4})
 
 _TITLE_Y: int = 2
 _TITLE_LINE_Y: int = 18
@@ -136,21 +140,24 @@ class EditScreen:
                 font=font, fill=theme.DIM,
             )
 
-        widgets.footer(draw, "↑↓ field   ←→ value   OK save   BACK")
+        widgets.footer(draw, "↑↓ field   ←→ edit   OK save   BACK")
         return canvas
 
 
 def editable_fields(cfg: TimelapseConfig) -> List[Tuple[str, str]]:
     """Flat (label, value) list of editable fields.
 
-    Always emits name, interval and shots. In auto mode that's it;
-    in manual mode three per-shot rows follow per Shot.
+    Always emits name, interval, shots, **start, end**. Then in manual
+    mode three per-shot rows follow per Shot. In auto mode the schedule
+    pair is still emitted between `shots` and any subsequent rows.
     """
     shots_value = format_shots(SHOTS_AUTO if cfg.is_auto else len(cfg.shots))
     fields: List[Tuple[str, str]] = [
         ("name", cfg.name),
         ("interval", _fmt_interval_value(cfg.interval_s)),
         ("shots", shots_value),
+        ("start", _fmt_moment_value(cfg.start)),
+        ("end", _fmt_moment_value(cfg.end)),
     ]
     for i, shot in enumerate(cfg.shots, start=1):
         fields.append((f"#{i} shutter", shot.format_shutter()))
@@ -167,6 +174,20 @@ def _fmt_interval_value(s: float) -> str:
 
 def _fmt_iso_value(iso: int) -> str:
     return str(iso)
+
+
+def _fmt_moment_value(moment: Optional[ScheduledMoment]) -> str:
+    """Edit-row display of a `ScheduledMoment` (prd2.md §6.2).
+
+    - `None`          → `—`
+    - daily (no date) → `HH:MM:SS`
+    - one-shot        → `YYYY-MM-DD HH:MM:SS`
+    """
+    if moment is None:
+        return "—"
+    if moment.date is None:
+        return moment.time.strftime("%H:%M:%S")
+    return f"{moment.date.isoformat()} {moment.time.strftime('%H:%M:%S')}"
 
 
 def _fmt_aperture_value(aperture) -> str:
@@ -193,6 +214,9 @@ class EditAction(str, Enum):
 
     SAVE = "save"   # OK pressed
     BACK = "back"   # BACK pressed
+    # prd2.md §6.2 — OK on a START/END row opens the digit picker.
+    OPEN_PICKER_START = "open_picker_start"
+    OPEN_PICKER_END = "open_picker_end"
 
 
 # Approximate visible window: ~12 editable fields fit between the
@@ -243,13 +267,22 @@ class EditScreenInteraction:
         if button == ButtonId.DOWN:
             self._move_cursor(+1, n_fields)
             return None
-        if button == ButtonId.LEFT:
-            self._cycle_value(-1)
-            return None
-        if button == ButtonId.RIGHT:
-            self._cycle_value(+1)
+        if button in (ButtonId.LEFT, ButtonId.RIGHT):
+            # Addendum F: on START/END both LEFT and RIGHT open the
+            # picker. Datetime values aren't enumerable, and the picker
+            # now hosts both value editing AND mode switching (via the
+            # mode chip), so the in-place cycler is gone. Other fields
+            # keep the cycler semantics unchanged.
+            kind, _ = _field_kind(self.field_cursor, self.draft)
+            if kind == "start":
+                return EditAction.OPEN_PICKER_START
+            if kind == "end":
+                return EditAction.OPEN_PICKER_END
+            self._cycle_value(-1 if button == ButtonId.LEFT else +1)
             return None
         if button == ButtonId.OK:
+            # Addendum F: OK uniformly means SAVE on every field. The
+            # picker for START/END is reached via LEFT/RIGHT now.
             return EditAction.SAVE
         if button == ButtonId.BACK:
             return EditAction.BACK
@@ -354,12 +387,13 @@ class EditScreenInteraction:
 
 
 def _num_editable_fields(cfg: TimelapseConfig) -> int:
-    """Number of navigable fields (no spacers). 3 header + 3 per shot.
+    """Number of navigable fields (no spacers).
 
-    Auto mode contributes only the 3 header rows (name, interval,
-    shots) — there are no per-shot fields to navigate.
+    5 header (name, interval, shots, start, end) + 3 per shot.
+    Auto mode keeps the 5 header rows (start/end are always editable)
+    and contributes no per-shot rows.
     """
-    return 3 + 3 * len(cfg.shots)
+    return 5 + 3 * len(cfg.shots)
 
 
 def _field_kind(
@@ -367,9 +401,9 @@ def _field_kind(
 ) -> Tuple[str, Optional[int]]:
     """Map a field index to (kind, shot_idx).
 
-    Layout: 0=name, 1=interval, 2=shots, then for shot k=0..N-1:
-    3+3k=shutter, 4+3k=iso, 5+3k=aperture. In auto mode only 0..2 are
-    valid.
+    Layout: 0=name, 1=interval, 2=shots, 3=start, 4=end, then for shot
+    k=0..N-1: 5+3k=shutter, 6+3k=iso, 7+3k=aperture. In auto mode only
+    0..4 are valid.
     """
     if idx == 0:
         return ("name", None)
@@ -377,10 +411,14 @@ def _field_kind(
         return ("interval", None)
     if idx == 2:
         return ("shots", None)
+    if idx == 3:
+        return ("start", None)
+    if idx == 4:
+        return ("end", None)
     if cfg.is_auto:
         # Should never happen — _num_editable_fields caps the cursor —
         # but be defensive.
-        return ("shots", None)
-    shot_idx = (idx - 3) // 3
-    param = ("shutter", "iso", "aperture")[(idx - 3) % 3]
+        return ("end", None)
+    shot_idx = (idx - 5) // 3
+    param = ("shutter", "iso", "aperture")[(idx - 5) % 3]
     return (param, shot_idx)

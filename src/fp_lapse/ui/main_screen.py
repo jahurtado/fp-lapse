@@ -28,12 +28,47 @@ from PIL import Image, ImageDraw
 from .. import __version__
 from ..buttons.iface import ButtonId
 from ..configs import TimelapseConfig
-from ..display.iface import new_canvas
+from ..display.iface import HEIGHT, new_canvas
 from ..engine import EngineState
 from . import theme, widgets
+from .schedule_indicator import ScheduleIndicator
 
 _FIRST_BLOCK_Y: int = 22  # just below the status-bar separator line
 _NEW_ITEM_GAP: int = 2    # px of breathing room between the last config and "+ New ..."
+_NEW_ITEM_HEIGHT: int = theme.ROW_HEIGHT + 2   # "+ New ..." text band height
+
+
+def _compute_scroll_offset(
+    cursor: int, heights: list, visible_h: int,
+) -> int:
+    """Addendum I: smallest "first visible block" index such that the
+    cursor's block fits inside `visible_h`. Stateless — recomputed on
+    every render from the cursor position and the per-block heights.
+
+    `heights` has one entry per visible position: `len(configs)` config
+    block heights followed by the `+ New ...` pseudo-row's height.
+    `cursor` is `0..len(configs)` inclusive (last index = `+ New`).
+
+    Returns the smallest `start` such that
+    `sum(heights[start:cursor+1]) <= visible_h`. When the cursor's
+    block alone exceeds `visible_h` (degenerate — very tall config),
+    clamps to the cursor position so at least that block renders from
+    the top of the visible area.
+
+    Complexity: `O(n^2)` worst-case (the `sum(...)` inside the loop is
+    `O(n)`). Intentional: the config list is hard-capped at 20 entries
+    by `MAX_CONFIGS`, so the worst case is ~441 ops per render —
+    invisible. A future refactor could precompute a cumulative-sum
+    array and binary-search the first `start` whose tail sum fits
+    (`O(n log n)`), but the simpler form is easier to follow at this
+    scale.
+    """
+    start = 0
+    while start <= cursor:
+        if sum(heights[start:cursor + 1]) <= visible_h:
+            return start
+        start += 1
+    return cursor
 
 
 @dataclass(frozen=True)
@@ -65,6 +100,9 @@ class UIState:
     # D5600 mode-dial mismatch: the engine wants MANUAL/PROGRAM but the
     # physical dial disagrees. Shows a "DIAL NOT ON M" warning.
     dial_mismatch: bool = False
+    # Schedule status (prd2.md §6): drives the 4-state colored-dot in
+    # the status bar. Default OFF preserves the legacy mockups.
+    schedule_state: ScheduleIndicator = ScheduleIndicator.OFF
 
 
 class MainScreen:
@@ -83,6 +121,7 @@ class MainScreen:
             show_skips=is_running or state.skips > 0,
             model_label=state.camera_model_label,
             dial_mismatch=state.dial_mismatch,
+            schedule_state=state.schedule_state,
         )
 
         # Persistent banners (§6.1, §6.3). When both fire the camera
@@ -95,10 +134,39 @@ class MainScreen:
             y = widgets.draw_banner(draw, y, "CONFIGS RESET",
                                     severity="warn")
 
-        for i, cfg in enumerate(state.configs):
-            cfg_running = (
-                is_running and state.active_config_name == cfg.name
+        # Addendum I: auto-scroll the config list so the cursor's block
+        # is fully visible. Heights are computed up front (one entry per
+        # config + one for the `+ New ...` virtual row).
+        visible_y_bottom = HEIGHT - theme.FOOTER_HEIGHT
+        visible_h = visible_y_bottom - y
+        block_heights = []
+        for cfg in state.configs:
+            cfg_running = is_running and state.active_config_name == cfg.name
+            block_heights.append(
+                widgets.config_block_height(
+                    len(cfg.shots),
+                    running=cfg_running,
+                    is_auto=cfg.is_auto,
+                    schedule_lines=len(widgets.format_schedule_lines(cfg)),
+                )
             )
+        block_heights.append(_NEW_ITEM_GAP + _NEW_ITEM_HEIGHT)
+        scroll_offset = _compute_scroll_offset(
+            cursor=state.cursor,
+            heights=block_heights,
+            visible_h=visible_h,
+        )
+
+        for i in range(scroll_offset, len(state.configs)):
+            next_y = y + block_heights[i]
+            # Stop before drawing a block that would overflow — unless
+            # it's the cursor's block, in which case we always show it
+            # (the auto-scroll guarantees the cursor is the last block
+            # to land inside the visible area).
+            if next_y > visible_y_bottom and i != state.cursor:
+                break
+            cfg = state.configs[i]
+            cfg_running = is_running and state.active_config_name == cfg.name
             y = widgets.draw_config_block(
                 draw, y, cfg,
                 selected=(state.cursor == i),
@@ -107,11 +175,16 @@ class MainScreen:
                 next_in_s=state.seconds_to_next_shot if cfg_running else None,
             )
 
-        widgets.draw_new_config_pseudo_item(
-            draw,
-            y + _NEW_ITEM_GAP,
-            selected=(state.cursor == len(state.configs)),
-        )
+        # `+ New ...` only renders when there is room left below the
+        # last drawn block. The auto-scroll guarantees the row is
+        # visible whenever the cursor lands on it.
+        new_y = y + _NEW_ITEM_GAP
+        if new_y + _NEW_ITEM_HEIGHT <= visible_y_bottom:
+            widgets.draw_new_config_pseudo_item(
+                draw,
+                new_y,
+                selected=(state.cursor == len(state.configs)),
+            )
 
         widgets.footer(
             draw, footer_hint(state),
@@ -128,6 +201,12 @@ def footer_hint(state: UIState) -> str:
     big internal padding. With the version label occupying the left
     ~46 px, hint widths must stay under ~260 px to keep a comfortable
     gap.
+
+    prd2.md §6.1: IDLE rows and the IDLE-equivalent RUNNING-on-running
+    row append the schedule annotation `← \x01time → sched` (LEFT opens the
+    TIME SETUP menu; RIGHT toggles the schedule). The two non-running
+    RUNNING rows drop it — the OK/BACK group dominates and the
+    indicator in the status bar already shows the schedule state.
     """
     cursor_on_new = state.cursor == len(state.configs)
     cursor_on_running = (
@@ -140,10 +219,16 @@ def footer_hint(state: UIState) -> str:
         if cursor_on_new:
             return "↑↓ nav  OK new  BACK stop"
         if cursor_on_running:
-            return "↑↓ nav  BACK stop"
+            return "↑↓ nav  BACK stop  ← time → sched"
         return "↑↓ nav  OK switch  BACK stop"
     if cursor_on_new:
-        return "↑↓ nav  OK new"
+        return "↑↓ nav  OK new  ← time → sched"
+    # IDLE on real config: restore `hold OK menu` (addendum C). The
+    # schedule annotation does not fit alongside the menu hint at the
+    # mono-11 width budget (~37 chars), and the operator is in this
+    # state most of the time — keeping menu discoverability wins.
+    # Schedule discoverability is preserved via the status-bar
+    # indicator and the IDLE-on-+New / RUNNING-on-running rows.
     return "↑↓ nav  OK run  hold OK menu"
 
 
@@ -163,6 +248,9 @@ class MainAction(str, Enum):
     STOP_CONFIRM = "stop_confirm"      # open the stop overlay (BACK in RUNNING)
     OPEN_MANAGE = "open_manage"        # open the manage menu (OK long on a config)
     OPEN_EDIT_NEW = "open_edit_new"    # create a new config (OK on + New)
+    # prd2.md §6.1 — schedule wiring of LEFT/RIGHT on the main screen.
+    TOGGLE_SCHEDULE = "toggle_schedule"     # RIGHT: flip the persisted schedule_enabled flag
+    OPEN_TIME_SETUP = "open_time_setup"     # LEFT: open the TIME SETUP modal menu
 
 
 @dataclass(frozen=True)
@@ -214,7 +302,12 @@ class MainScreenInteraction:
             if engine_state == EngineState.RUNNING:
                 return MainActionResult(MainAction.STOP_CONFIRM)
             return None  # §7.1: BACK in IDLE = no-op
-        return None  # LEFT/RIGHT reserved (§7.1)
+        # prd2.md §6.1 — schedule wiring (LEFT/RIGHT no longer reserved).
+        if button == ButtonId.LEFT:
+            return MainActionResult(MainAction.OPEN_TIME_SETUP)
+        if button == ButtonId.RIGHT:
+            return MainActionResult(MainAction.TOGGLE_SCHEDULE)
+        return None
 
     def on_release(
         self,

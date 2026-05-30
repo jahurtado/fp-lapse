@@ -33,7 +33,6 @@ WARN: Final[RGB] = (240, 200, 60)
 ERR: Final[RGB] = (240, 60, 60)
 
 # Modal overlays
-OVERLAY_SHADE: Final[RGBA] = (0, 0, 0, 170)
 DIALOG_BG: Final[RGB] = (28, 32, 42)
 DIALOG_BORDER: Final[RGB] = (90, 95, 110)
 

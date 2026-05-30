@@ -5,7 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] — 2026-05-27
+## [1.2.0] — 2026-05-30
+
+Adds **scheduled start/end times per configuration** so the rig can run
+unattended through a planned event (headline use case: the 2026-08-12
+total solar eclipse, but equally good for daily sunrise / sunset
+timelapses). A global `schedule` flag arms the system; once armed, the
+engine starts and switches configurations at their scheduled instants
+without any operator touch. Time anchoring is via `systemd-timesyncd` at
+boot (no RTC needed) and includes a sanity envelope so a glitched NTP
+response can't fire spurious events.
+
+### Added
+
+- **Per-configuration `start` and `end` moments**. Each schedulable
+  moment is either an absolute datetime (`YYYY-MM-DD HH:MM:SS`, fires
+  once and never again), a time-of-day only (fires every day at that
+  time — useful for daily sunrise / sunset routines), or empty (no
+  schedule). Edited via two new fields in the per-config editor.
+- **Schedule global on/off**, toggled with the RIGHT button on the main
+  screen and persisted to `runtime/schedule_state.json` across reboots.
+- **Schedule indicator** in the top-right of the status bar: a small
+  clock pictogram + colored dot. **Red** = armed but no NTP sync yet
+  (engine inert); **green** = armed and synced fresh (engine firing);
+  **yellow** = armed and synced but stale (>2 h since last sync) or the
+  last sync was rejected by the trusted-clock envelope (engine still
+  firing on its last good anchor). Nothing renders when the schedule is
+  off.
+- **`TIME SETUP` menu** opened with a short press of the LEFT button on
+  the main screen. Two options: `Force NTP sync` (kicks an immediate
+  re-sync via `systemd-timesyncd` and unconditionally trusts the result;
+  shows an animated `Syncing.` / `..` / `...` while it runs) and
+  `Set manually` (opens the datetime picker in system-clock mode to
+  enter the time by hand when no network is available).
+- **Datetime picker overlay** with a leftmost **mode chip** that cycles
+  `[—]` (clear) / `[TIME]` (time-only, daily) / `[DATE+TIME]` (one-shot)
+  using UP/DOWN, and per-digit editing for the value. Reachable from the
+  editor by pressing LEFT or RIGHT on a START / END field.
+- **Schedule lines** under each config name on the main screen — shows
+  the upcoming start (`▶`) and/or end (`■`) with their times. One-shot
+  pairs that share the same date collapse to a single line for
+  compactness (`2026-08-12  ▶ 11:33:23  ■ 11:36:09`).
+- **Auto-scroll on the main screen** when the list of configurations no
+  longer fits in the visible area. The block under the cursor stays
+  visible; moving UP / DOWN scrolls the list automatically.
+- **Field-setup section in the README** with `nmcli` recipes for
+  registering a phone hotspot as a fallback Wi-Fi network, so the Pi
+  can get its boot-time NTP sync away from the home network.
+
+### Changed
+
+- **`runtime/configs.json` schema bumped from v1 to v2** to carry the
+  new `start` / `end` fields. Existing v1 files load unchanged
+  (with both fields defaulting to `None`); the file is rewritten as v2
+  on the next save. No manual migration step required.
+- **Overlay transitions are now fully opaque** (datetime picker, TIME
+  SETUP menu, manage menu, confirmation dialogs). The previous
+  semi-transparent dim-through-to-previous-screen pattern was hard to
+  read on the small TFT and was replaced with a clean opaque background.
+- **Wall-clock display in the status bar reads from the trusted clock**
+  instead of `datetime.now()` whenever a baseline is available. This
+  means the visible time on screen is always the time the engine is
+  actually using for scheduling — a rogue NTP response never makes the
+  TFT show a wildly different time from what the engine is firing on.
+- **OK in the per-config editor uniformly saves**, on every field. The
+  previous behaviour where OK on START / END opened the picker (rather
+  than save) is gone — the picker is now reached with LEFT or RIGHT on
+  those fields, and OK has a single consistent job everywhere.
+- **Footer hint on the main screen** updates dynamically: idle row on a
+  real config shows `↑↓ nav  OK run  hold OK menu`; the `+ New` and
+  running-on-running rows show `↑↓ nav  …  ← time → sched` to advertise
+  the new schedule affordances.
+
 
 Adds a second supported camera — the **Nikon D5600** — alongside the
 Sigma fp, with automatic detection and runtime hot-swap.

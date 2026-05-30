@@ -26,10 +26,11 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date as date_t, datetime, time as time_t
 from pathlib import Path
 from typing import Iterable, Optional
 
+from .schedule.moment import ScheduledMoment
 from .shutter import format_shutter, in_range as shutter_in_range, parse_shutter
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,11 @@ MAX_NAME_LENGTH: int = 20
 ISO_MIN: int = 100
 ISO_MAX: int = 25600
 
-SCHEMA_VERSION: int = 1
+# Schema version we WRITE on save. The loader accepts every version
+# listed in SUPPORTED_SCHEMA_VERSIONS. v1 → v2 added optional
+# `start`/`end` ScheduledMoments per config (scheduled-configs PRD §1).
+SCHEMA_VERSION: int = 2
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
 
 
 class ConfigsError(Exception):
@@ -99,10 +104,16 @@ class TimelapseConfig:
 
     `shots` with 1..9 items is **manual mode**: one explicit shot per
     bracket position, exposure values come from each `Shot`.
+
+    `start` / `end` are optional `ScheduledMoment`s attached to this
+    config for the schedule engine (scheduled-configs PRD §1). Both
+    default to `None`, preserving the historical constructor signature.
     """
     name: str
     interval_s: float
     shots: tuple[Shot, ...]
+    start: Optional[ScheduledMoment] = None
+    end: Optional[ScheduledMoment] = None
 
     @property
     def is_auto(self) -> bool:
@@ -145,6 +156,45 @@ def _parse_shot(raw) -> Shot:
     return Shot(shutter=shutter, iso=iso, aperture=aperture)
 
 
+def _parse_scheduled_moment(raw, *, label: str) -> Optional[ScheduledMoment]:
+    """Parse a `ScheduledMoment` from `{"date": ... , "time": ...}`.
+
+    `raw is None` (or the key absent in the caller's `dict.get`) →
+    returns `None`. `time` is mandatory; `date` is optional.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigSchemaError(
+            f"{label} must be an object or null, got {type(raw).__name__}"
+        )
+    if "time" not in raw or raw.get("time") is None:
+        raise ConfigSchemaError(f"{label} requires a non-null `time`")
+    time_raw = raw.get("time")
+    if not isinstance(time_raw, str):
+        raise ConfigSchemaError(
+            f"{label}.time must be an ISO-8601 string, got {type(time_raw).__name__}"
+        )
+    try:
+        time_v = time_t.fromisoformat(time_raw)
+    except ValueError as e:
+        raise ConfigSchemaError(f"{label}.time: invalid time string: {e}") from None
+    date_raw = raw.get("date")
+    date_v: Optional[date_t]
+    if date_raw is None:
+        date_v = None
+    elif isinstance(date_raw, str):
+        try:
+            date_v = date_t.fromisoformat(date_raw)
+        except ValueError as e:
+            raise ConfigSchemaError(f"{label}.date: invalid date string: {e}") from None
+    else:
+        raise ConfigSchemaError(
+            f"{label}.date must be an ISO-8601 string or null, got {type(date_raw).__name__}"
+        )
+    return ScheduledMoment(time=time_v, date=date_v)
+
+
 def _parse_config(raw) -> TimelapseConfig:
     if not isinstance(raw, dict):
         raise ConfigSchemaError(f"config must be an object, got {type(raw).__name__}")
@@ -173,29 +223,60 @@ def _parse_config(raw) -> TimelapseConfig:
             name, len(shots), MAX_SHOTS_PER_BRACKET,
         )
         shots = shots[:MAX_SHOTS_PER_BRACKET]
-    return TimelapseConfig(name=name, interval_s=float(interval), shots=tuple(shots))
+    start = _parse_scheduled_moment(raw.get("start"), label=f"config {name!r} start")
+    end = _parse_scheduled_moment(raw.get("end"), label=f"config {name!r} end")
+    return TimelapseConfig(
+        name=name,
+        interval_s=float(interval),
+        shots=tuple(shots),
+        start=start,
+        end=end,
+    )
 
 
 def _shot_to_dict(shot: Shot) -> dict:
     return {"shutter": shot.shutter, "iso": shot.iso, "aperture": shot.aperture}
 
 
-def _config_to_dict(cfg: TimelapseConfig) -> dict:
+def _moment_to_dict(m: Optional[ScheduledMoment]) -> Optional[dict]:
+    if m is None:
+        return None
     return {
+        "date": m.date.isoformat() if m.date is not None else None,
+        "time": m.time.isoformat(),
+    }
+
+
+def _config_to_dict(cfg: TimelapseConfig) -> dict:
+    out = {
         "name": cfg.name,
         "interval_s": cfg.interval_s,
         "shots": [_shot_to_dict(s) for s in cfg.shots],
     }
+    # Emit start/end only when set, keeping JSON minimal for configs
+    # without a schedule.
+    if cfg.start is not None:
+        out["start"] = _moment_to_dict(cfg.start)
+    if cfg.end is not None:
+        out["end"] = _moment_to_dict(cfg.end)
+    return out
 
 
 def validate_strict(configs: Iterable[TimelapseConfig]) -> None:
     """Enforce hard limits, name uniqueness, and value ranges. Raises
-    `ConfigValidationError` on any violation."""
+    `ConfigValidationError` on any violation.
+
+    Schedule moments with a past `date` get a `logger.warning(...)`
+    instead of a raise — decision #1 edge case: the field is valid;
+    the engine simply will not fire (decision #5: no catch-up). The
+    editor surfaces the warning before save.
+    """
     configs = list(configs)
     if len(configs) > MAX_CONFIGS:
         raise ConfigValidationError(
             f"too many configs: {len(configs)} > {MAX_CONFIGS}"
         )
+    today = date_t.today()
     seen: set[str] = set()
     for c in configs:
         if not c.name or len(c.name) > MAX_NAME_LENGTH:
@@ -219,6 +300,20 @@ def validate_strict(configs: Iterable[TimelapseConfig]) -> None:
             if not (ISO_MIN <= s.iso <= ISO_MAX):
                 raise ConfigValidationError(
                     f"iso out of range in {c.name!r}[shot {i}]: {s.iso}"
+                )
+        # Schedule moment integrity (`time` is non-None by construction;
+        # check defensively) + past-date warning.
+        for label, moment in (("start", c.start), ("end", c.end)):
+            if moment is None:
+                continue
+            if not isinstance(moment.time, time_t):
+                raise ConfigValidationError(
+                    f"{label}.time invalid in {c.name!r}"
+                )
+            if moment.date is not None and moment.date < today:
+                logger.warning(
+                    "config %r %s date is in the past (%s); event will not fire",
+                    c.name, label, moment.date.isoformat(),
                 )
 
 
@@ -283,9 +378,10 @@ class ConfigStore:
         if not isinstance(data, dict):
             raise ConfigSchemaError("root must be an object")
         version = data.get("version")
-        if version != SCHEMA_VERSION:
+        if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise ConfigSchemaError(
-                f"unsupported version: {version!r} (expected {SCHEMA_VERSION})"
+                f"unsupported version: {version!r} "
+                f"(supported: {SUPPORTED_SCHEMA_VERSIONS})"
             )
         configs_raw = data.get("configs")
         if not isinstance(configs_raw, list):

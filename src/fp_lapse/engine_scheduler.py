@@ -33,6 +33,16 @@ callback) under `_cmd_lock`. If the engine is mid-shoot when a stop
 command arrives, the caller blocks until the in-flight bracket
 completes — matching spec §5.3 ("already-started captures are always
 finished").
+
+In addition to the blocking `cmd_*` methods, `cmd_*_async` variants
+enqueue a single-slot mailbox and return immediately, for callers that
+must not block (currently: the UI-thread schedule evaluator). The
+scheduler thread picks up the pending closure at the top of its next
+loop iteration and applies it through the same `_cmd_lock`-guarded
+path as a direct blocking call. Last-write-wins: a second async call
+arriving while the mailbox is full overwrites the first; the schedule
+evaluator computes one winner per tick so this invariant holds
+naturally.
 """
 
 from __future__ import annotations
@@ -62,6 +72,10 @@ class EngineScheduler:
         self._shutdown = threading.Event()
         self._dirty_event = dirty_event
         self._now = now_monotonic
+        # Single-slot mailbox for non-blocking `cmd_*_async` callers.
+        # See module docstring.
+        self._pending_cmd: Optional[Callable[[], None]] = None
+        self._pending_lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._run, name="engine-scheduler", daemon=True,
         )
@@ -116,7 +130,37 @@ class EngineScheduler:
         self._wake.set()
         self._notify_dirty()
 
+    # --- async mailbox variants (non-blocking) ---
+    def cmd_start_async(self, cfg: TimelapseConfig) -> None:
+        """Enqueue cmd_start(cfg); return immediately.
+
+        The closure runs on the scheduler thread at the top of its
+        next loop iteration, taking `_cmd_lock` exactly as a direct
+        `cmd_start` call would. Last-write-wins: a second
+        `cmd_*_async` call arriving before pickup overrides this one.
+        """
+        self._enqueue(lambda: self.cmd_start(cfg))
+
+    def cmd_switch_async(self, cfg: TimelapseConfig) -> None:
+        """Enqueue cmd_switch(cfg); return immediately. See `cmd_start_async`."""
+        self._enqueue(lambda: self.cmd_switch(cfg))
+
+    def cmd_stop_async(self) -> None:
+        """Enqueue cmd_stop(); return immediately. See `cmd_start_async`."""
+        self._enqueue(lambda: self.cmd_stop())
+
     # --- internals ---
+    def _enqueue(self, fn: Callable[[], None]) -> None:
+        with self._pending_lock:
+            self._pending_cmd = fn
+        self._wake.set()
+
+    def _drain_pending(self) -> Optional[Callable[[], None]]:
+        with self._pending_lock:
+            fn = self._pending_cmd
+            self._pending_cmd = None
+        return fn
+
     def _notify_dirty(self) -> None:
         if self._dirty_event is not None:
             self._dirty_event.set()
@@ -124,6 +168,18 @@ class EngineScheduler:
     def _run(self) -> None:
         logger.info("scheduler: thread started")
         while not self._shutdown.is_set():
+            # Drain any pending async command BEFORE looking at the
+            # next grid mark — the command may change the engine
+            # state in a way that invalidates `next_fire_monotonic`.
+            pending = self._drain_pending()
+            if pending is not None:
+                try:
+                    pending()
+                except Exception:
+                    logger.exception(
+                        "scheduler: pending async command raised — continuing",
+                    )
+
             with self._cmd_lock:
                 next_t = self._engine.next_fire_monotonic()
 

@@ -52,9 +52,15 @@ def stop_confirm() -> OverlayDialog:
     return OverlayDialog(title="Stop the timelapse?", body="Sync will be lost.")
 
 
-def save_confirm() -> OverlayDialog:
-    """OK in edit: confirms the save."""
-    return OverlayDialog(title="Save changes?")
+def save_confirm(*, warning: Optional[str] = None) -> OverlayDialog:
+    """OK in edit: confirms the save.
+
+    `warning` is an optional informational body line — prd2.md §6.2
+    surfaces a "start date is in the past" hint here when the draft has
+    a one-shot moment whose date has already passed. The save still
+    proceeds on confirm; the warning is purely advisory.
+    """
+    return OverlayDialog(title="Save changes?", body=warning)
 
 
 def discard_changes() -> OverlayDialog:
@@ -69,15 +75,8 @@ def delete_confirm(config_name: str) -> OverlayDialog:
 
 def render_overlay(base: Image.Image, dialog: OverlayDialog) -> Image.Image:
     """Compose `dialog` on top of `base`. Returns a fresh RGB 320x240 image."""
-    if base.size != (WIDTH, HEIGHT):
-        raise ValueError(
-            f"base must be {WIDTH}x{HEIGHT}, got {base.size}"
-        )
-    rgba = base.convert("RGBA")
-    shade = Image.new("RGBA", (WIDTH, HEIGHT), theme.OVERLAY_SHADE)
-    rgba.alpha_composite(shade)
-
-    draw = ImageDraw.Draw(rgba)
+    # Addendum G: opaque screen transition (see picker_datetime.py).
+    rgba, draw = widgets.new_overlay_canvas(base)
     font = fonts.mono(_BODY_PT)
 
     draw.rectangle(

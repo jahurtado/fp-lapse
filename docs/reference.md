@@ -67,7 +67,7 @@ If it does not exist at startup, it is created with `configs: []`.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "configs": [
     {
       "name": "Partial",
@@ -85,12 +85,16 @@ If it does not exist at startup, it is created with `configs: []`.
         { "shutter": "1/30",  "iso": 400,  "aperture": null },
         { "shutter": "1/8",   "iso": 400,  "aperture": null },
         { "shutter": 2,       "iso": 1600, "aperture": null }
-      ]
+      ],
+      "start": { "date": "2026-08-12", "time": "11:33:23" },
+      "end":   { "date": "2026-08-12", "time": "11:36:09" }
     },
     {
       "name": "Auto day",
       "interval_s": 30,
-      "shots": []
+      "shots": [],
+      "start": { "date": null, "time": "07:00:00" },
+      "end":   { "date": null, "time": "19:00:00" }
     }
   ]
 }
@@ -98,7 +102,10 @@ If it does not exist at startup, it is created with `configs: []`.
 
 Rules:
 
-- `version`: integer, today `1`. Allows future format migrations.
+- `version`: integer, today `2`. Allows future format migrations. The
+  loader still accepts `version: 1` files (everything written before
+  the scheduled-configs feature); they load with `start = end = null`
+  and the next save rewrites them as `version: 2`.
 - `name`: string, unique within the file. Used as identifier in logs
   and as the visible label. Max 20 chars.
 - `interval_s`: number (integer or decimal) > 0, in seconds.
@@ -152,6 +159,13 @@ Rules:
   - `null` → `f/—`.
 
   `iso` displays as `ISO N`.
+
+- `start` / `end`: each is either `null` or an object of shape
+  `{"date": "YYYY-MM-DD" | null, "time": "HH:MM:SS"}`. The `time`
+  field is mandatory when the object is present; `date` may be `null`
+  (daily recurrence) or an ISO date (one-shot absolute instant). See
+  §11 for the semantics of `start` / `end` and how the schedule engine
+  consumes them.
 
 ### 3.3 Translation to the camera
 

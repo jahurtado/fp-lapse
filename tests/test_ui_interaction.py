@@ -93,17 +93,21 @@ class TestMainCursor(unittest.TestCase):
             )
         self.assertEqual(ix.cursor, 2)  # on +New
 
-    def test_horizontal_buttons_reserved(self):
+    def test_horizontal_buttons_do_not_move_cursor(self):
+        # prd2.md §6.1: LEFT/RIGHT no longer reserved — they map to
+        # OPEN_TIME_SETUP / TOGGLE_SCHEDULE. The cursor stays put.
         ix = MainScreenInteraction()
-        ix.on_press(
+        left = ix.on_press(
             ButtonId.LEFT,
             configs=(A,), engine_state=EngineState.IDLE,
         )
-        ix.on_press(
+        right = ix.on_press(
             ButtonId.RIGHT,
             configs=(A,), engine_state=EngineState.IDLE,
         )
         self.assertEqual(ix.cursor, 0)
+        self.assertEqual(left, MainActionResult(MainAction.OPEN_TIME_SETUP))
+        self.assertEqual(right, MainActionResult(MainAction.TOGGLE_SCHEDULE))
 
 
 # ----------------------------------------------------------------------
@@ -425,10 +429,11 @@ class TestEditInteractionBasics(unittest.TestCase):
         self.assertEqual(self.ix.field_cursor, 0)
 
     def test_down_clamps_at_last_field(self):
-        # 3 header + 3 shot params = 6 fields total
+        # prd2.md §6.2: 5 header (name, interval, shots, start, end) +
+        # 3 shot params = 8 fields total → last index is 7.
         for _ in range(20):
             self.ix.on_press(ButtonId.DOWN)
-        self.assertEqual(self.ix.field_cursor, 5)
+        self.assertEqual(self.ix.field_cursor, 7)
 
     def test_ok_returns_save(self):
         self.assertEqual(self.ix.on_press(ButtonId.OK), EditAction.SAVE)
@@ -524,14 +529,17 @@ class TestEditCycling(unittest.TestCase):
         self.assertTrue(ix.draft.is_auto)
 
     def test_shutter_cycle_modifies_draft(self):
-        self._move_to_field(3)  # #1 shutter
+        # prd2.md §6.2: #1 shutter is now field 5 (after the
+        # start/end pair inserted at 3/4).
+        self._move_to_field(5)
         self.ix.on_press(ButtonId.RIGHT)
         # 1/500 → next in SHUTTER_VALUES = 1/400
         self.assertNotEqual(self.ix.draft.shots[0].shutter, 1 / 500)
         self.assertTrue(self.ix.is_dirty)
 
     def test_iso_cycle_modifies_draft(self):
-        self._move_to_field(4)  # #1 iso
+        # prd2.md §6.2: #1 iso is now field 6.
+        self._move_to_field(6)
         original_iso = self.ix.draft.shots[0].iso
         self.ix.on_press(ButtonId.RIGHT)
         self.assertNotEqual(self.ix.draft.shots[0].iso, original_iso)

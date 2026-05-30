@@ -70,5 +70,71 @@ class _FailingAdapter:
         return False
 
 
+class TestScheduleLoopWiring(unittest.TestCase):
+    """prd2.md §7 — the UI loop must call `maybe_poll()` and `tick()`
+    before `app.render()`, in that order, on every iteration."""
+
+    def test_main_loop_invokes_prober_and_evaluator_before_render(self):
+        src = inspect.getsource(main_mod.main)
+        self.assertIn("time_sync_prober.maybe_poll()", src)
+        self.assertIn("schedule_evaluator.tick()", src)
+        idx_poll = src.index("time_sync_prober.maybe_poll()")
+        idx_tick = src.index("schedule_evaluator.tick()")
+        # Find the render call INSIDE the loop body — the second
+        # occurrence of `app.render()`. The first one is the initial
+        # paint before the loop starts and does NOT carry the
+        # poll/tick guarantee.
+        first_render = src.index("app.render()")
+        second_render = src.index("app.render()", first_render + 1)
+        self.assertLess(idx_poll, second_render)
+        self.assertLess(idx_tick, second_render)
+        # And maybe_poll runs before tick (so on_sync can land first).
+        self.assertLess(idx_poll, idx_tick)
+
+    def test_schedule_trio_constructed_and_bound(self):
+        src = inspect.getsource(main_mod.main)
+        for needle in (
+            "ScheduleStateStore(",
+            "TrustedClock(",
+            "TimeSyncProber(",
+            "ScheduleEvaluator(",
+            "app.bind_schedule(",
+        ):
+            self.assertIn(needle, src)
+
+    def test_no_extra_start_or_shutdown_on_schedule(self):
+        # The schedule layer has no threads; ensure __main__ does NOT
+        # try to start() or shutdown() any of them.
+        src = inspect.getsource(main_mod.main)
+        for needle in (
+            "schedule_evaluator.start",
+            "schedule_evaluator.shutdown",
+            "time_sync_prober.start",
+            "time_sync_prober.shutdown",
+        ):
+            self.assertNotIn(needle, src)
+
+
+class TestButtonRouterUnchanged(unittest.TestCase):
+    """prd2.md §6.1: LEFT must NOT acquire long-press machinery."""
+
+    def test_left_long_press_not_armed(self):
+        from fp_lapse.buttons.iface import ButtonId
+        src = inspect.getsource(main_mod.ButtonRouter)
+        # The long-press arm only fires on OK; if LEFT ever appears in
+        # the arm path this regression catches it.
+        self.assertIn("if bid == ButtonId.OK:", src)
+        # The arm helper must not be invoked for any non-OK button. A
+        # broader assertion: only the OK branch should call
+        # `_arm_long_press`.
+        arm_count = src.count("_arm_long_press")
+        # One call from on_press(OK) + the method definition itself.
+        self.assertLessEqual(arm_count, 3)
+        # And no explicit check on ButtonId.LEFT in the press path.
+        # (A future implementer adding `if bid == ButtonId.LEFT: …` to
+        # arm a timer would land in `on_press`; this test fails first.)
+        self.assertNotIn("ButtonId.LEFT", src)
+
+
 if __name__ == "__main__":
     unittest.main()
