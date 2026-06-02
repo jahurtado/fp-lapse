@@ -51,6 +51,7 @@ from .schedule import (
     TrustedClock,
 )
 from .schedule.moment import ScheduledMoment
+from .shutdown import do_shutdown
 from .ui import (
     DateTimePickerInteraction,
     EditAction,
@@ -71,9 +72,11 @@ from .ui import (
     TimeSetupMenuState,
     UIState,
     handle_overlay_button,
+    poweroff_confirm,
     render_datetime_picker,
     render_manage_menu,
     render_overlay,
+    render_powering_off,
     render_time_setup_menu,
     delete_confirm,
     discard_changes,
@@ -109,6 +112,10 @@ def _past_date_warning(cfg: TimelapseConfig) -> Optional[str]:
 
     Used by `OVERLAY_SAVE` (prd2.md §6.2). Returns `None` when there
     is no past date (the body of the save overlay stays empty).
+
+    Text is constrained to fit inside the 240-px-wide modal dialog
+    in mono-11 — the previous longer form ("Note: start date is in
+    the past — won't fire.") rendered ~292 px and overflowed.
     """
     today = date_t.today()
     past_fields = [
@@ -117,7 +124,7 @@ def _past_date_warning(cfg: TimelapseConfig) -> Optional[str]:
     ]
     if not past_fields:
         return None
-    return f"Note: {past_fields[0]} date is in the past — won't fire."
+    return f"{past_fields[0].capitalize()} date past — won't fire"
 
 
 class AppState(str, Enum):
@@ -131,6 +138,9 @@ class AppState(str, Enum):
     # prd2.md §6 — schedule UI states.
     TIME_SETUP = "time_setup"             # LEFT-press menu over main screen
     PICKER = "picker"                     # digit picker (from edit or time setup)
+    # §7.8 — safe shutdown via BACK+OK chord.
+    OVERLAY_POWEROFF = "overlay_poweroff"  # "Power off?" confirmation
+    SHUTTING_DOWN = "shutting_down"        # phase 1 after confirm
 
 
 class App:
@@ -141,10 +151,20 @@ class App:
         store: ConfigStore,
         camera: Camera,
         now_monotonic: Callable[[], float] = time.monotonic,
+        shutdown_action: Optional[Callable[[], None]] = None,
     ) -> None:
         self.scheduler = scheduler
         self.store = store
         self.camera = camera
+        # Safe-shutdown invocation (§7.8). Injectable so tests can
+        # replace `do_shutdown` (which Popens /sbin/shutdown) with a
+        # spy. On Mac mock runs the default still fires but the
+        # missing `/sbin/shutdown` is logged and swallowed — see
+        # `shutdown.do_shutdown`.
+        self._shutdown_action: Callable[[], None] = shutdown_action or do_shutdown
+        # Previous AppState when the chord fired — restored if the
+        # operator presses BACK on the "Power off?" overlay.
+        self._prev_state_before_poweroff: Optional[AppState] = None
         # Monotonic clock used by the schedule-indicator staleness
         # check (and any future monotonic-time read inside `App`).
         # Injectable so unit tests can drive the staleness window
@@ -277,6 +297,17 @@ class App:
                     self._dispatch_picker_save()
                 elif r is PickerAction.CANCEL:
                     self._dispatch_picker_cancel()
+            elif self.state == AppState.OVERLAY_POWEROFF:
+                # §7.8: OK confirms shutdown, BACK returns to the
+                # screen that was visible when the chord fired.
+                r = handle_overlay_button(button)
+                if r is not None:
+                    self._dispatch_overlay_poweroff(r)
+            elif self.state == AppState.SHUTTING_DOWN:
+                # §7.8 phase 1: the operator is no longer expected to
+                # interact. Every button is inert until systemd halts
+                # the service.
+                return
 
     def on_release(self, button) -> None:
         with self.lock:
@@ -304,6 +335,20 @@ class App:
                 )
                 if r is not None:
                     self._dispatch_main(r)
+
+    def on_safe_shutdown_chord(self) -> None:
+        """BACK+OK held 3 s — open the `Power off?` overlay (§7.8).
+
+        Global hook: fires from any state. If we are already in the
+        confirmation overlay or past it (`SHUTTING_DOWN`), the second
+        chord is a no-op — the operator can release and re-attempt to
+        cancel, but they cannot pile a second shutdown on top.
+        """
+        with self.lock:
+            if self.state in (AppState.OVERLAY_POWEROFF, AppState.SHUTTING_DOWN):
+                return
+            self._prev_state_before_poweroff = self.state
+            self.state = AppState.OVERLAY_POWEROFF
 
     # -- Rendering -------------------------------------------------------
 
@@ -369,6 +414,19 @@ class App:
                     manage_img,
                     delete_confirm(self._manage_target_name or "?"),
                 )
+            if self.state == AppState.OVERLAY_POWEROFF:
+                # §7.8: chord can fire from any screen. Using main_img
+                # as the underlay (always pre-computed above) gives a
+                # consistent backdrop regardless of where the chord
+                # came from — the operator's attention is on the
+                # modal, not the dimmed background.
+                return render_overlay(main_img, poweroff_confirm())
+            if self.state == AppState.SHUTTING_DOWN:
+                # §7.8: single combined message ("POWERING OFF…" +
+                # LED hint). Painted from the moment OK is pressed
+                # and persists through the kernel halt thanks to the
+                # pitft22's internal frame memory.
+                return render_powering_off()
             return main_img
 
     def _render_edit_image(self) -> Image.Image:
@@ -414,6 +472,7 @@ class App:
             camera_model_label=self._camera_model_label(),
             dial_mismatch=self._camera_dial_mismatch(),
             schedule_state=self._compute_schedule_indicator(),
+            schedule_disabled=not self.schedule_enabled,
         ))
 
     def _camera_model_label(self) -> str:
@@ -554,6 +613,40 @@ class App:
         if ok:
             self.scheduler.cmd_stop()
         self.state = AppState.MAIN
+
+    def _dispatch_overlay_poweroff(self, ok: bool) -> None:
+        """OK confirms the shutdown sequence; BACK cancels back to prev.
+
+        On confirm:
+            - state → `SHUTTING_DOWN` so the next render shows the
+              `POWERING OFF…` screen with the LED hint, and every
+              button becomes inert.
+            - The injected shutdown action runs (Popens `/sbin/shutdown
+              -h now`). It does NOT block — systemd starts firing
+              SIGTERM within ~100 ms.
+
+        The engine is intentionally NOT stopped here. The existing
+        SIGTERM handler in `__main__.main()` reaches the loop's
+        `finally:` block and tears down `scheduler` + `camera_health`
+        + `camera` in the same sequence as a normal exit. Sync for an
+        in-flight bracket is lost — identical to §5.3 behavior. The
+        pitft22 panel retains the `POWERING OFF…` frame across the
+        kernel halt until the operator pulls the powerbank.
+        """
+        if not ok:
+            # BACK: restore the screen the operator was on. Engine
+            # state untouched (a running timelapse keeps running).
+            self.state = self._prev_state_before_poweroff or AppState.MAIN
+            self._prev_state_before_poweroff = None
+            return
+        self.state = AppState.SHUTTING_DOWN
+        try:
+            self._shutdown_action()
+        except Exception:
+            # The action's own logging is enough; we already committed
+            # to the `POWERING OFF…` screen and there's no useful UI
+            # fallback. Operator can SSH in to diagnose.
+            logger.exception("shutdown action raised")
 
     # -- Sync feedback (prd2.md addendum A1) ----------------------------
 
@@ -877,13 +970,15 @@ class App:
         self._notify_dirty()
 
     def _compute_schedule_indicator(self) -> ScheduleIndicator:
-        """Map the schedule + trusted-clock state to a colored dot.
+        """Map the trusted-clock state to a colored dot.
 
-        Pure function of `self.schedule_enabled`, `trusted_clock` and
-        `time_sync_prober`. Called under `self.lock` by the renderer.
+        Pure function of `trusted_clock` and `time_sync_prober`. The
+        `schedule_enabled` flag is intentionally NOT consulted here:
+        the colored dot reflects the *would-be* engine state, and the
+        UI renders it alongside a strikethrough on the clock glyph
+        when `schedule_enabled` is False — see `widgets.status_bar`
+        and §6 of `prd2.md`. Called under `self.lock` by the renderer.
         """
-        if not self.schedule_enabled:
-            return ScheduleIndicator.OFF
         if self.trusted_clock is None or not self.trusted_clock.has_baseline:
             return ScheduleIndicator.RED
         if self.trusted_clock.is_glitched:

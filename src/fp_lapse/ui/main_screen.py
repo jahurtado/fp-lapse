@@ -103,6 +103,11 @@ class UIState:
     # Schedule status (prd2.md §6): drives the 4-state colored-dot in
     # the status bar. Default OFF preserves the legacy mockups.
     schedule_state: ScheduleIndicator = ScheduleIndicator.OFF
+    # Schedule enable flag (§6 addendum): when True the clock glyph is
+    # rendered with a diagonal strikethrough — the dot still reflects
+    # the would-be engine state. Default False keeps the legacy "no
+    # strikethrough" look for screens constructed without this info.
+    schedule_disabled: bool = False
 
 
 class MainScreen:
@@ -122,6 +127,8 @@ class MainScreen:
             model_label=state.camera_model_label,
             dial_mismatch=state.dial_mismatch,
             schedule_state=state.schedule_state,
+            schedule_disabled=state.schedule_disabled,
+            version_stamp=f"v{__version__}",
         )
 
         # Persistent banners (§6.1, §6.3). When both fire the camera
@@ -186,27 +193,39 @@ class MainScreen:
                 selected=(state.cursor == len(state.configs)),
             )
 
-        widgets.footer(
-            draw, footer_hint(state),
-            version_stamp=f"v{__version__}",
-        )
+        primary, secondary = footer_hint(state)
+        widgets.footer(draw, primary, hint2=secondary)
         return canvas
 
 
-def footer_hint(state: UIState) -> str:
-    """Footer hint string for the current engine state and cursor position.
+# Secondary footer line — same for every main-screen state. Carries
+# the three global shortcuts that aren't state-dependent:
+#   LEFT       → opens the TIME SETUP modal menu
+#   RIGHT      → toggles the persisted `schedule_enabled` flag
+#   BACK+OK    → safe shutdown chord (§7.8), 3 s hold
+# Width budget at mono-11: ~44 chars × ~6.5 px = ~286 px (fits within
+# the ~312 px usable area with comfortable margin).
+_SECONDARY_HINT: str = "← time setup  → sched on/off  OK+ESC shutdown"
 
-    The footer is right-aligned (version stamp lives on the left), so
-    hints use single-space separators between action groups instead of
-    big internal padding. With the version label occupying the left
-    ~46 px, hint widths must stay under ~260 px to keep a comfortable
-    gap.
 
-    prd2.md §6.1: IDLE rows and the IDLE-equivalent RUNNING-on-running
-    row append the schedule annotation `← \x01time → sched` (LEFT opens the
-    TIME SETUP menu; RIGHT toggles the schedule). The two non-running
-    RUNNING rows drop it — the OK/BACK group dominates and the
-    indicator in the status bar already shows the schedule state.
+def footer_hint(state: UIState) -> tuple[str, str]:
+    """Returns `(primary, secondary)` footer lines for the current state.
+
+    The primary line carries the state-dependent actions the operator
+    will press most often (OK / BACK / hold OK). The secondary line is
+    constant: the three global shortcuts (LEFT / RIGHT / BACK+OK
+    chord) — see `_SECONDARY_HINT`.
+
+    Primary mono-11 width budget: the version stamp lives in the
+    status bar (top-right) now, so the footer right edge is free —
+    hints can use the full ~310 px before clipping.
+
+    Earlier design (single-line footer) inlined `← time → sched`
+    selectively per state when room allowed; that hid the global
+    shortcuts in the most common IDLE-on-real-config state. The
+    two-line footer (FOOTER_HEIGHT bumped 16→28) buys back the
+    discoverability without sacrificing the `hold OK menu` primary
+    hint.
     """
     cursor_on_new = state.cursor == len(state.configs)
     cursor_on_running = (
@@ -217,19 +236,18 @@ def footer_hint(state: UIState) -> str:
     )
     if state.engine_state == EngineState.RUNNING:
         if cursor_on_new:
-            return "↑↓ nav  OK new  BACK stop"
-        if cursor_on_running:
-            return "↑↓ nav  BACK stop  ← time → sched"
-        return "↑↓ nav  OK switch  BACK stop"
-    if cursor_on_new:
-        return "↑↓ nav  OK new  ← time → sched"
-    # IDLE on real config: restore `hold OK menu` (addendum C). The
-    # schedule annotation does not fit alongside the menu hint at the
-    # mono-11 width budget (~37 chars), and the operator is in this
-    # state most of the time — keeping menu discoverability wins.
-    # Schedule discoverability is preserved via the status-bar
-    # indicator and the IDLE-on-+New / RUNNING-on-running rows.
-    return "↑↓ nav  OK run  hold OK menu"
+            primary = "↑↓ nav  OK new  ESC stop"
+        elif cursor_on_running:
+            primary = "↑↓ nav  ESC stop"
+        else:
+            primary = "↑↓ nav  OK switch  ESC stop"
+    elif cursor_on_new:
+        primary = "↑↓ nav  OK new"
+    else:
+        # IDLE on real config: `hold OK menu` is the discoverability
+        # path into the manage menu (addendum C).
+        primary = "↑↓ nav  OK run  hold OK menu"
+    return primary, _SECONDARY_HINT
 
 
 # ----------------------------------------------------------------------

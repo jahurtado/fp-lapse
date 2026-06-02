@@ -68,6 +68,31 @@ class TestShootDispatchesByFocusMode(unittest.TestCase):
         )
         self.assertIn("_ExposureMode.Manual", connect_section)
 
+    def test_connect_forces_DNG_image_quality(self):
+        # config_api() resets ALL camera settings to PTP-session
+        # defaults, including ImageQuality — the body silently shoots
+        # JPEG even though the menu reads DNG. Observed 2026-06-02:
+        # a full night-long bracket timelapse lost its RAW workflow
+        # because of this. The adapter MUST push DNG explicitly on
+        # every connect, just like it does for ExposureMode.Manual.
+        self.assertIn("ImageQuality as _ImageQuality", self.source)
+        connect_section = (
+            self.source.split("def _connect_locked")[1].split("\n    def ")[0]
+        )
+        self.assertIn("_ImageQuality.DNG", connect_section)
+
+    def test_connect_silences_shutter_sound(self):
+        # config_api() resets ShutterSound to its session default
+        # ("on"), making every PTP-triggered capture click regardless
+        # of what the STILL/CINE menu held — confirmed by user
+        # 2026-06-01 testing manual vs PTP capture. The adapter must
+        # push ShutterSound=0 on connect so PTP-driven shoots stay
+        # silent.
+        connect_section = (
+            self.source.split("def _connect_locked")[1].split("\n    def ")[0]
+        )
+        self.assertIn("ShutterSound=0", connect_section)
+
 
 if __name__ == "__main__":
     unittest.main()

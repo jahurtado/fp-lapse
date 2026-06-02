@@ -124,6 +124,8 @@ class ButtonRouter:
     - Forward press / release to `app.on_press` / `app.on_release`.
     - Arm a `threading.Timer` on OK press and cancel it on release;
       when the timer fires (3 s elapsed), call `app.on_long_press`.
+    - Detect the BACK+OK chord (both held for 3 s) and call
+      `app.on_safe_shutdown_chord()` when it completes (§7.8).
     - Set `dirty_event` after every dispatch so the UI thread
       re-renders promptly.
 
@@ -134,8 +136,13 @@ class ButtonRouter:
     def __init__(self, *, app: App, dirty_event: threading.Event) -> None:
         self._app = app
         self._dirty = dirty_event
-        self._lp_lock = threading.Lock()
+        # Single lock protects both timers AND the pressed-set so the
+        # chord detector doesn't race with the OK long-press logic
+        # when BACK arrives while OK is already held.
+        self._timer_lock = threading.Lock()
         self._lp_timer: Optional[threading.Timer] = None
+        self._chord_timer: Optional[threading.Timer] = None
+        self._pressed: set[ButtonId] = set()
 
     def attach(self, panel) -> None:
         for bid in ButtonId:
@@ -148,38 +155,72 @@ class ButtonRouter:
             self._app.on_press(bid)
         except Exception:
             logger.exception("on_press(%s) raised", bid.name)
-        if bid == ButtonId.OK:
-            self._arm_long_press()
+        with self._timer_lock:
+            self._pressed.add(bid)
+            if bid == ButtonId.OK:
+                self._arm_long_press_locked()
+            # Chord supersedes OK long-press: as soon as both BACK
+            # and OK are held, drop any pending long-press timer so a
+            # 3 s hold doesn't pop the manage menu.
+            if ButtonId.BACK in self._pressed and ButtonId.OK in self._pressed:
+                self._cancel_long_press_locked()
+                self._arm_chord_locked()
         self._dirty.set()
 
     def on_release(self, bid: ButtonId) -> None:
-        if bid == ButtonId.OK:
-            self._cancel_long_press()
+        with self._timer_lock:
+            self._pressed.discard(bid)
+            if bid == ButtonId.OK:
+                self._cancel_long_press_locked()
+            # Releasing either chord member breaks the chord.
+            if bid in (ButtonId.BACK, ButtonId.OK):
+                self._cancel_chord_locked()
         try:
             self._app.on_release(bid)
         except Exception:
             logger.exception("on_release(%s) raised", bid.name)
         self._dirty.set()
 
-    def _arm_long_press(self) -> None:
-        with self._lp_lock:
-            if self._lp_timer is not None:
-                self._lp_timer.cancel()
-            self._lp_timer = threading.Timer(LONG_PRESS_S, self._fire_long_press)
-            self._lp_timer.daemon = True
-            self._lp_timer.start()
+    # --- single-button OK long-press (existing behavior, §7.5) ---
 
-    def _cancel_long_press(self) -> None:
-        with self._lp_lock:
-            if self._lp_timer is not None:
-                self._lp_timer.cancel()
-                self._lp_timer = None
+    def _arm_long_press_locked(self) -> None:
+        if self._lp_timer is not None:
+            self._lp_timer.cancel()
+        self._lp_timer = threading.Timer(LONG_PRESS_S, self._fire_long_press)
+        self._lp_timer.daemon = True
+        self._lp_timer.start()
+
+    def _cancel_long_press_locked(self) -> None:
+        if self._lp_timer is not None:
+            self._lp_timer.cancel()
+            self._lp_timer = None
 
     def _fire_long_press(self) -> None:
         try:
             self._app.on_long_press(ButtonId.OK)
         except Exception:
             logger.exception("on_long_press(OK) raised")
+        self._dirty.set()
+
+    # --- BACK+OK chord (safe shutdown, §7.8) ---
+
+    def _arm_chord_locked(self) -> None:
+        if self._chord_timer is not None:
+            self._chord_timer.cancel()
+        self._chord_timer = threading.Timer(LONG_PRESS_S, self._fire_chord)
+        self._chord_timer.daemon = True
+        self._chord_timer.start()
+
+    def _cancel_chord_locked(self) -> None:
+        if self._chord_timer is not None:
+            self._chord_timer.cancel()
+            self._chord_timer = None
+
+    def _fire_chord(self) -> None:
+        try:
+            self._app.on_safe_shutdown_chord()
+        except Exception:
+            logger.exception("on_safe_shutdown_chord raised")
         self._dirty.set()
 
 
@@ -313,6 +354,12 @@ def main() -> int:
             display.blit(frame)
     finally:
         logger.info("shutting down")
+        # §7.8: no special-case paint here. If the chord triggered the
+        # exit, the screen is already showing `POWERING OFF…` + LED
+        # hint (rendered the moment OK was pressed on the overlay),
+        # and the pitft22 panel retains that frame across the kernel
+        # halt. Other exit paths (normal stop, SIGTERM from systemctl
+        # stop) keep their usual silent shutdown.
         camera_health.shutdown(timeout=2.0)
         scheduler.shutdown(timeout=2.0)
         for closer in (display, buttons):

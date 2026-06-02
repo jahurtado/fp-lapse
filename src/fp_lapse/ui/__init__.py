@@ -32,10 +32,12 @@ from .overlays import (
     delete_confirm,
     discard_changes,
     handle_overlay_button,
+    poweroff_confirm,
     render_overlay,
     save_confirm,
     stop_confirm,
 )
+from .shutdown_screen import render_powering_off
 from .picker_datetime import (
     DateTimePickerInteraction,
     PickerAction,
@@ -79,9 +81,11 @@ __all__ = [
     "editable_fields",
     "footer_hint",
     "handle_overlay_button",
+    "poweroff_confirm",
     "render_datetime_picker",
     "render_manage_menu",
     "render_overlay",
+    "render_powering_off",
     "render_time_setup_menu",
     "save_confirm",
     "stop_confirm",

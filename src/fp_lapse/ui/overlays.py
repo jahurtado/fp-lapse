@@ -44,7 +44,7 @@ class OverlayDialog:
 
     title: str
     body: Optional[str] = None
-    hint: str = "OK yes        BACK no"
+    hint: str = "OK yes        ESC no"
 
 
 def stop_confirm() -> OverlayDialog:
@@ -71,6 +71,11 @@ def discard_changes() -> OverlayDialog:
 def delete_confirm(config_name: str) -> OverlayDialog:
     """Manage menu → Delete: confirms the config removal."""
     return OverlayDialog(title=f"Delete '{config_name}'?")
+
+
+def poweroff_confirm() -> OverlayDialog:
+    """BACK+OK chord (§7.8): confirms the safe shutdown."""
+    return OverlayDialog(title="Power off?")
 
 
 def render_overlay(base: Image.Image, dialog: OverlayDialog) -> Image.Image:

@@ -288,14 +288,18 @@ All the steps below run **on the Pi**, over that SSH session.
 sudo apt update
 sudo apt install -y \
     git python3-pip python3-venv \
-    libopenblas0 libopenjp2-7 libtiff6 \
+    libopenblas0 libopenjp2-7 libtiff6 libfreetype6 \
     fonts-dejavu-core
 ```
 
 - `git` — `uv` uses it to fetch `sigma-ptpy` from GitHub.
 - `libopenblas0` — the prebuilt numpy wheel links against it at runtime.
-- `libopenjp2-7`, `libtiff6` — shared libraries the Pillow wheel needs
-  at runtime.
+- `libopenjp2-7`, `libtiff6`, `libfreetype6` — shared libraries the
+  Pillow wheel needs at runtime. Without `libfreetype6` the service
+  fails at startup with
+  `ImportError: libfreetype.so.6: cannot open shared object file` —
+  Pillow 12 binds to it for font rendering and Lite doesn't pull it
+  in transitively the way the Desktop image does.
 - `fonts-dejavu-core` — provides `DejaVuSansMono`, the UI's fallback
   font when Menlo isn't available.
 
@@ -334,6 +338,22 @@ sudo usermod -aG gpio,video,dialout,plugdev $USER
 
 (The systemd service runs as root, so this only matters for running the
 app manually as your user.)
+
+### 4b. NOPASSWD sudo (so `make ship` doesn't prompt)
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010_$USER-nopasswd
+sudo chmod 440 /etc/sudoers.d/010_$USER-nopasswd
+```
+
+The dev loop (`make ship`, `make logs`, `make restart`) calls
+`sudo systemctl …` over SSH. Without NOPASSWD, every deploy stops at
+an interactive password prompt that no `ssh pi3 'sudo …'` one-liner
+can satisfy. The systemd service still runs as root regardless; this
+only lifts the per-call prompt for your user account.
+
+> ⚠️ Trades a security boundary for convenience. Skip this step if
+> you'd rather type the password each deploy.
 
 ### 5. Get the code onto the Pi
 

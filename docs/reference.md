@@ -266,7 +266,7 @@ Example (the originating spec scenario): `t0 = 10:35:00`, config A
 
 `t0` is lost (and will be set again on the next OK) in these cases:
 
-- The user stops the run with BACK (see §5.3) and confirms.
+- The user stops the run with ESC (see §5.3) and confirms.
 - The user deletes the running configuration from the manage menu
   (see §7.5). The Delete confirmation also acts as a Stop
   confirmation.
@@ -320,9 +320,9 @@ Rules:
 - The app **never** stops working because of skips. The grid
   synchronization is always preserved.
 
-### 5.3 Stopping with BACK
+### 5.3 Stopping with ESC
 
-While the engine is RUNNING, pressing BACK asks for confirmation
+While the engine is RUNNING, pressing ESC asks for confirmation
 before stopping (overlay §7.4). If confirmed:
 
 - The engine moves to IDLE.
@@ -473,7 +473,7 @@ Conventions:
 | ← / →          | No effect (reserved).                                   |
 | OK short       | Runs the selected config (or creates, if on `+ New configuration`). |
 | OK long (≥3s)  | Opens the manage menu (§7.5). Does not apply on `+ New configuration`. |
-| BACK           | **No effect.** The main screen is the root; there is nowhere to go back to. |
+| ESC           | **No effect.** The main screen is the root; there is nowhere to go back to. |
 
 ### 7.2 Main screen — RUNNING (engine firing)
 
@@ -498,7 +498,7 @@ Case A — cursor sits on the running config (both coincide):
 │                                        │
 │ + New configuration                    │
 ├────────────────────────────────────────┤
-│ ↑↓ nav                    BACK stop    │
+│ ↑↓ nav                    ESC stop    │
 └────────────────────────────────────────┘
 ```
 
@@ -521,13 +521,13 @@ Case B — cursor sits on **another** config (not the running one):
 │                                        │
 │ + New configuration                    │
 ├────────────────────────────────────────┤
-│ ↑↓ nav   OK switch here   BACK stop    │
+│ ↑↓ nav   OK switch here   ESC stop    │
 └────────────────────────────────────────┘
 ```
 
 **Button mapping in RUNNING:**
 
-| Cursor on…                  | OK short                                       | OK long             | BACK                      |
+| Cursor on…                  | OK short                                       | OK long             | ESC                      |
 |-----------------------------|------------------------------------------------|---------------------|---------------------------|
 | the running config          | No effect.                                     | Opens manage menu.  | Stop confirmation.        |
 | another config              | Switches the engine to that config (keeps `t0`). | Opens manage menu.  | Stop confirmation.        |
@@ -552,7 +552,7 @@ Case B — cursor sits on **another** config (not the running one):
 │  #2 iso                 400            │
 │  …                                     │
 ├────────────────────────────────────────┤
-│ ↑↓ field   ←→ value   OK save   BACK   │
+│ ↑↓ field   ←→ value   OK save   ESC   │
 └────────────────────────────────────────┘
 ```
 
@@ -596,7 +596,7 @@ In auto mode (`shots == []`) the per-shot rows collapse:
   irreversible operation, so the spec prioritizes safety over speed.
   The confirmation fires even when there are no apparent changes (no
   special-case "nothing dirty" path — keeps the rule uniform).
-- `BACK`: opens the discard-changes confirmation (§7.4) if there were
+- `ESC`: opens the discard-changes confirmation (§7.4) if there were
   changes; returns directly to the list if there were none.
 
 ### 7.4 Confirmation overlays
@@ -609,7 +609,7 @@ All overlays share format and button mapping.
 │       Stop the timelapse?              │
 │       Sync will be lost.               │
 │                                        │
-│         OK yes        BACK no          │
+│         OK yes        ESC no          │
 │                                        │
 └────────────────────────────────────────┘
 ```
@@ -618,18 +618,18 @@ Cases where they are shown:
 
 | Context                                   | Text                              |
 |-------------------------------------------|-----------------------------------|
-| BACK with engine in RUNNING               | `Stop the timelapse?` / `Sync will be lost.` |
+| ESC with engine in RUNNING               | `Stop the timelapse?` / `Sync will be lost.` |
 | OK in edit                                | `Save changes?`                   |
-| BACK in edit with pending changes         | `Discard changes?`                |
+| ESC in edit with pending changes         | `Discard changes?`                |
 | Manage menu → Delete                      | `Delete 'X'?`                     |
 
 The overlay is laid on top of the previous screen, darkening the
-background. `OK` confirms, `BACK` cancels. There is no third button.
+background. `OK` confirms, `ESC` cancels. There is no third button.
 
-> Intentional consequence: in RUNNING, `BACK` (opens overlay) +
-> `BACK` (cancels) is effectively a no-op. This is desirable — an
+> Intentional consequence: in RUNNING, `ESC` (opens overlay) +
+> `ESC` (cancels) is effectively a no-op. This is desirable — an
 > accidental press does not break synchronization. Whoever truly
-> wants to stop presses `BACK` → `OK`.
+> wants to stop presses `ESC` → `OK`.
 
 ### 7.5 Manage menu (long-press OK)
 
@@ -658,7 +658,7 @@ affect the engine in either case.
   confirmation; no second prompt).
 - **Cancel**: closes the menu.
 
-`↑` / `↓` navigate, `OK` selects, `BACK` closes the menu without
+`↑` / `↓` navigate, `OK` selects, `ESC` closes the menu without
 action.
 
 ### 7.6 Configuration names (no on-screen keyboard)
@@ -704,6 +704,82 @@ it in the future, an on-screen keyboard can be added as a sub-screen.
 
 If the external JSON violates these limits, the first N are loaded
 and a WARNING is logged — startup is not blocked.
+
+### 7.8 Safe shutdown (ESC + OK chord)
+
+The Pi has no power switch. Cutting the powerbank live risks
+filesystem corruption on the SD (observed in the field: a hard pull
+during a write left the rootfs in a state that needed reflashing).
+The app provides a deterministic clean-shutdown path from the
+operator panel.
+
+**Trigger**: ESC and OK held **simultaneously** for **3 seconds**
+(the same threshold as the long-press in §7.5). Available from
+**any** screen — the chord is global, not gated by `AppState`. No
+visual feedback during the hold; the operator simply holds.
+
+Releasing either button before 3 s aborts the chord and nothing
+happens. There is no warning, no toast, no partial state — the
+chord is silent until it fires.
+
+**Confirmation overlay** (same layout as §7.4):
+
+```
+┌────────────────────────────────────────┐
+│                                        │
+│            Power off?                  │
+│                                        │
+│         OK yes        ESC no          │
+│                                        │
+└────────────────────────────────────────┘
+```
+
+`ESC` returns to the screen the operator was on (including engine
+state — the running timelapse is **not** stopped by opening or
+cancelling this overlay). `OK` proceeds.
+
+**Visual after confirm**:
+
+A single screen with the title `POWERING OFF…` (green) and the hint
+`Unplug the powerbank when the green LED is off.` (dim). Painted from
+the moment `OK` is pressed on the overlay and held throughout the
+entire shutdown sequence — including after the kernel halts, because
+the pitft22 retains its last frame in panel memory until 3.3 V is cut
+at the GPIO header.
+
+> An earlier design used two phases (`SHUTTING DOWN…` then `SAFE TO
+> DISCONNECT`). In practice systemd starts firing SIGTERM at the
+> service within a few hundred ms of `/sbin/shutdown -h now`, so the
+> first phase was visible for ~200 ms — too brief to read. A single
+> always-correct message removes the timing race and the cosmetic
+> sleep that would otherwise be needed to make phase 1 readable.
+
+**Engine and camera interaction**:
+
+- If the engine is RUNNING, it gets the normal STOP path during
+  systemd shutdown (the existing SIGTERM handler in `__main__.py`).
+  Sync data for the in-progress bracket is lost — same as a §5.3
+  user-initiated stop.
+- The camera session is closed cleanly (`SigmaCloseApplication`).
+
+**Why no countdown / progress indicator during the 3 s hold?**
+
+The chord is deliberate by design (two buttons + duration). A
+half-pressed chord that crosses 1.5 s and is released is
+indistinguishable from intent to abort, which is the conservative
+interpretation. Adding a progress bar would invite the operator to
+"watch and decide" mid-hold, which raises the false-positive rate.
+The explicit confirmation overlay after the 3 s catches honest
+mistakes.
+
+**Failure modes**:
+
+- `/sbin/shutdown` not found / non-zero exit: the screen stays on
+  Phase 1, a WARNING is logged. The operator can SSH in to
+  diagnose. No automatic retry.
+- Service not running as root: the `subprocess` call fails with
+  EPERM and the same Phase-1-stuck behavior applies. (In practice
+  the unit always runs as root — §execution model in CLAUDE.md.)
 
 ---
 

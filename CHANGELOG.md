@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-06-02
+
+Closes two silent data-loss footguns in the PTP capture path that a
+night-long bracketed timelapse on 2026-06-01 surfaced — the Sigma fp
+was clicking on every frame regardless of the `Sound → Shutter Sound`
+menu, and silently saving JPEG even with the menu set to DNG — and
+adds a hardware-button safe-shutdown path so the rig no longer needs
+a powerbank pull to switch off (one of those killed the rootfs in the
+same session).
+
+### Added
+
+- **Safe shutdown chord (§7.8 of `docs/reference.md`).** Hold OK + ESC
+  together for 3 s from any screen → modal `Power off?` overlay →
+  confirm with OK → full-screen `POWERING OFF…` message with a hint to
+  wait for the green LED before unplugging. The pitft22 keeps that
+  frame in panel memory across the kernel halt so the operator sees a
+  clear "OK to disconnect" signal until the powerbank is pulled.
+  Eliminates the filesystem-corruption risk of yanking the powerbank
+  while writes are in flight.
+- **Two-line footer on the main screen** so the global LEFT / RIGHT /
+  chord shortcuts have permanent visibility without crowding the
+  state-dependent primary line. Line 2 reads
+  `← time setup  → sched on/off  OK+ESC shutdown` from every state.
+
+### Changed
+
+- **Schedule indicator semantics.** The colored dot now always
+  reflects the would-be engine state (red / green / yellow based on
+  trusted-clock health) regardless of whether the schedule global is
+  enabled. When the schedule is disabled, the clock pictogram is
+  drawn with a diagonal strikethrough — the operator sees both pieces
+  of information at once (would the engine be firing? + is the
+  schedule armed right now?) instead of the previous "vanish on
+  disable" behaviour that hid the underlying state.
+- **`BACK` button label renamed to `ESC` throughout the UI** (footer
+  hints, confirmation overlays, the datetime picker) to match the
+  silkscreen on the physical button. Internal identifiers
+  (`ButtonId.BACK`) stay the same — the rename is purely operator-
+  facing.
+- **Version stamp moved from the footer to the top-right of the
+  status bar** (DIM colour). Frees the footer line for hint text and
+  groups the live metadata (clock, camera model, SKIPS, schedule
+  indicator, version) in one place.
+- **Save-overlay past-date warning shortened** from `"Note: start
+  date is in the past — won't fire."` to `"Start date past — won't
+  fire"` so it fits inside the 240 px-wide modal dialog at mono-11
+  (the previous text overflowed both sides).
+
+### Fixed
+
+- **Sigma fp PTP capture no longer plays the simulated shutter
+  click** regardless of menu setting. The Sigma firmware's
+  `config_api()` call (issued by every PTP session) resets camera
+  settings to PTP-session defaults, so the user's
+  `Sound → Shutter Sound = 0` setting was being silently reverted on
+  every connect. The adapter now pushes
+  `CamDataGroup4(ShutterSound=0)` explicitly after `config_api()`.
+- **Sigma fp PTP capture no longer saves as JPEG when the camera
+  menu says DNG.** Same root cause as the shutter sound fix:
+  `config_api()` resets `ImageQuality` to its session default. The
+  adapter now pushes `CamDataGroup2(ImageQuality=DNG)` explicitly on
+  connect. Without this fix, an entire bracketed timelapse silently
+  saves as lossy 8-bit JPEG with white balance and tone baked in —
+  observed in the field on the night of 2026-06-01, recoverable
+  only via `enfuse` / Lightroom and never as good as raw.
+
+### Notes
+
+- The safe-shutdown chord is **global** — it fires from EDIT, MANAGE,
+  PICKER and every overlay, not just MAIN. There is no progress
+  indicator during the 3 s hold (a deliberate "the chord is the
+  confirmation" choice); the modal that appears after the hold is the
+  abort path. Releasing either button before the 3 s elapse cancels
+  the chord silently.
+- The two PTP fixes apply only to the Sigma fp adapter. The Nikon
+  D5600 uses gphoto2 and a different settings model; image quality
+  and sound there are honoured from the camera menu directly.
+
 ## [1.2.0] — 2026-05-30
 
 Adds **scheduled start/end times per configuration** so the rig can run

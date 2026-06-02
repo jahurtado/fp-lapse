@@ -248,10 +248,13 @@ class TestMainScreenVisualRegression(unittest.TestCase):
         )
 
 
-class TestFooterHintScheduleAnnotation(unittest.TestCase):
-    """prd2.md §6.1: IDLE rows and the RUNNING-on-running row carry
-    `← time → sched`. Other RUNNING rows drop it. No row may mention
-    'trust' (the operator-facing label is `time`)."""
+class TestFooterHintTwoLines(unittest.TestCase):
+    """Two-line footer (§7.8 addendum): `footer_hint` returns
+    `(primary, secondary)`. Primary depends on state (OK/BACK/hold OK
+    actions). Secondary is constant — it carries the global shortcuts
+    (`← time setup`, `→ sched on/off`, `OK+BACK shutdown`) so they
+    stay discoverable in every state without crowding the primary
+    line."""
 
     def _idle_state(self, cursor: int) -> UIState:
         return UIState(
@@ -279,47 +282,70 @@ class TestFooterHintScheduleAnnotation(unittest.TestCase):
             wall_clock_str="18:42:07",
         )
 
-    def test_idle_on_config_restores_hold_menu_hint(self):
-        """Addendum C: the IDLE-on-real-config row restores the
-        `hold OK menu` mention at the cost of the schedule annotation
-        (the two don't fit together in the 37-char budget)."""
-        h = footer_hint(self._idle_state(cursor=0))
-        self.assertIn("hold OK menu", h)
-        self.assertNotIn("← time", h)
-        self.assertNotIn("→ sched", h)
-        self.assertNotIn("trust", h.lower())
+    # --- secondary is the same constant in every state ---
 
-    def test_idle_on_new_has_schedule_annotation(self):
-        # cursor=1 == "+ New" given 1 config. No menu applies on +New
-        # so the schedule annotation stays here for discoverability.
-        h = footer_hint(self._idle_state(cursor=1))
-        self.assertIn("← time", h)
-        self.assertIn("→ sched", h)
+    def _assert_secondary_complete(self, secondary: str) -> None:
+        self.assertIn("← time setup", secondary)
+        self.assertIn("→ sched on/off", secondary)
+        self.assertIn("OK+ESC shutdown", secondary)
+        # No leftover from the old single-line format.
+        self.assertNotIn("→ sched", secondary.replace("→ sched on/off", ""))
+        self.assertNotIn("trust", secondary.lower())
 
-    def test_running_on_running_has_schedule_annotation(self):
-        # cursor on the running config (index 0 == Partial). No menu
-        # applies on the running config; the schedule annotation stays.
-        h = footer_hint(self._running_state(cursor=0))
-        self.assertIn("← time", h)
-        self.assertIn("→ sched", h)
+    def test_secondary_constant_in_idle_on_config(self):
+        _, secondary = footer_hint(self._idle_state(cursor=0))
+        self._assert_secondary_complete(secondary)
 
-    def test_running_off_running_drops_schedule(self):
-        h = footer_hint(self._running_state(cursor=1))
-        self.assertNotIn("← time", h)
-        self.assertNotIn("→ sched", h)
-        self.assertIn("OK switch", h)
+    def test_secondary_constant_in_idle_on_new(self):
+        _, secondary = footer_hint(self._idle_state(cursor=1))
+        self._assert_secondary_complete(secondary)
 
-    def test_running_on_new_drops_schedule(self):
-        # cursor=2 == "+ New" given 2 configs.
-        h = footer_hint(self._running_state(cursor=2))
-        self.assertNotIn("← time", h)
-        self.assertIn("OK new", h)
+    def test_secondary_constant_in_running_on_running(self):
+        _, secondary = footer_hint(self._running_state(cursor=0))
+        self._assert_secondary_complete(secondary)
+
+    def test_secondary_constant_in_running_off_running(self):
+        _, secondary = footer_hint(self._running_state(cursor=1))
+        self._assert_secondary_complete(secondary)
+
+    # --- primary is state-dependent and free of LEFT/RIGHT noise ---
+
+    def test_idle_on_config_keeps_hold_menu_hint(self):
+        """Addendum C survives the two-line refactor: the IDLE on
+        real-config primary keeps the `hold OK menu` discoverability,
+        and no longer competes with `← time → sched` for width."""
+        primary, _ = footer_hint(self._idle_state(cursor=0))
+        self.assertIn("OK run", primary)
+        self.assertIn("hold OK menu", primary)
+        # Secondary line carries those — primary must not duplicate.
+        self.assertNotIn("← time", primary)
+        self.assertNotIn("→ sched", primary)
+
+    def test_idle_on_new_primary_is_clean(self):
+        primary, _ = footer_hint(self._idle_state(cursor=1))
+        self.assertIn("OK new", primary)
+        self.assertNotIn("← time", primary)
+        self.assertNotIn("→ sched", primary)
+
+    def test_running_on_running_primary_is_clean(self):
+        primary, _ = footer_hint(self._running_state(cursor=0))
+        self.assertIn("ESC stop", primary)
+        self.assertNotIn("← time", primary)
+        self.assertNotIn("→ sched", primary)
+
+    def test_running_off_running_primary_has_switch(self):
+        primary, _ = footer_hint(self._running_state(cursor=1))
+        self.assertIn("OK switch", primary)
+        self.assertIn("ESC stop", primary)
+        self.assertNotIn("← time", primary)
 
 
 class TestScheduleIndicatorRegression(unittest.TestCase):
-    """Pixel-exact byte equality against the 07..10 mockups."""
+    """Pixel-exact byte equality against the 07..10 + 19 mockups."""
 
-    def _state(self, ind: ScheduleIndicator) -> UIState:
+    def _state(
+        self, ind: ScheduleIndicator, *, disabled: bool = False,
+    ) -> UIState:
         return UIState(
             configs=(PARTIAL, TOTALITY, FREE),
             cursor=0,
@@ -331,13 +357,16 @@ class TestScheduleIndicatorRegression(unittest.TestCase):
             camera_connected=True,
             wall_clock_str="18:42:07",
             schedule_state=ind,
+            schedule_disabled=disabled,
         )
 
-    def _check(self, name: str, ind: ScheduleIndicator) -> None:
+    def _check(
+        self, name: str, ind: ScheduleIndicator, *, disabled: bool = False,
+    ) -> None:
         expected_path = MOCKUPS_DIR / f"{name}.png"
         self.assertTrue(expected_path.exists(), f"missing {expected_path}")
         expected = Image.open(expected_path).convert("RGB")
-        actual = MainScreen().render(self._state(ind))
+        actual = MainScreen().render(self._state(ind, disabled=disabled))
         if actual.tobytes() != expected.tobytes():
             out = _dump_artifacts(name, expected, actual)
             self.fail(
@@ -355,6 +384,17 @@ class TestScheduleIndicatorRegression(unittest.TestCase):
 
     def test_10_yellow(self):
         self._check("10_main_idle_schedule_yellow", ScheduleIndicator.YELLOW)
+
+    def test_19_disabled_with_strikethrough(self):
+        # §6 addendum: when scheduling is disabled, the would-be
+        # color still renders but the clock gets a diagonal
+        # strikethrough. Baseline uses GREEN here — operator turned
+        # scheduling off after a successful first sync.
+        self._check(
+            "19_main_idle_schedule_disabled",
+            ScheduleIndicator.GREEN,
+            disabled=True,
+        )
 
 
 class TestComputeScrollOffset(unittest.TestCase):

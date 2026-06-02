@@ -129,6 +129,8 @@ def status_bar(
     model_label: str = "fp",
     dial_mismatch: bool = False,
     schedule_state: ScheduleIndicator = ScheduleIndicator.OFF,
+    schedule_disabled: bool = False,
+    version_stamp: Optional[str] = None,
 ) -> None:
     """Top bar. Occupies up to y=18 (separator line included).
 
@@ -142,6 +144,12 @@ def status_bar(
     rendered immediately left of SKIPS: nothing when OFF; a clock
     glyph + colored dot otherwise. Default `OFF` preserves the
     pre-schedule visual contract for every existing call site.
+
+    `version_stamp`, when given, renders at the far-right of the bar
+    in DIM colour — metadata, secondary, but persistent so it doesn't
+    crowd the footer hints. SKIPS and the schedule indicator shift
+    left of it when both are shown. Default `None` preserves the
+    pre-version visual contract.
     """
     font = fonts.mono(_BODY_PT)
     draw.text((4, 2), time_str, font=font, fill=theme.FG)
@@ -156,10 +164,17 @@ def status_bar(
             (cx + cr + _WARN_GAP, 2), "DIAL NOT ON M",
             font=font, fill=theme.WARN,
         )
-    # Right-anchored group: indicator (if any) + SKIPS (if shown).
-    # Render SKIPS first to know its left edge, then the indicator just
-    # to its left.
+    # Right-anchored group: version stamp (if any) | SKIPS (if shown)
+    # | indicator (if any). Rightmost element renders first so the
+    # next one to its left can compute its position.
     right_edge = WIDTH - 6
+    if version_stamp is not None:
+        sw = _text_w(draw, version_stamp, font)
+        draw.text(
+            (right_edge - sw, 2), version_stamp,
+            font=font, fill=theme.DIM,
+        )
+        right_edge = right_edge - sw - _INDICATOR_GAP
     if show_skips:
         s = f"SKIPS {skips}"
         sw = _text_w(draw, s, font)
@@ -185,6 +200,16 @@ def status_bar(
             ],
             fill=dot_color,
         )
+        if schedule_disabled:
+            # Diagonal strikethrough across the clock glyph — bottom-
+            # left to top-right corner of the 9-px circle bbox. Drawn
+            # in FG (brighter than the DIM glyph) so it stands out
+            # without competing with the colored dot for attention.
+            r = _INDICATOR_CLOCK_DIAMETER // 2
+            draw.line(
+                [(ix, cy + r), (ix + _INDICATOR_CLOCK_DIAMETER - 1, cy - r)],
+                fill=theme.FG,
+            )
     draw.line(
         [(0, theme.STATUS_BAR_Y_LINE), (WIDTH, theme.STATUS_BAR_Y_LINE)],
         fill=theme.SEP,
@@ -195,13 +220,21 @@ def footer(
     draw: ImageDraw.ImageDraw,
     hint: str,
     *,
+    hint2: Optional[str] = None,
     version_stamp: Optional[str] = None,
 ) -> None:
     """Bottom strip with the button hint text.
 
-    The hint is always left-aligned (primary information, where the
-    eye starts reading). If `version_stamp` is given, it renders
-    bottom-right in DIM colour — metadata, secondary.
+    Two rows of mono-11. `hint` is the primary line (state-dependent
+    actions like `OK run` / `BACK stop`); `hint2` is the optional
+    secondary line — the main screen uses it for the global
+    LEFT/RIGHT/chord shortcuts. Callers that don't need a second line
+    (edit_screen, picker_datetime) omit `hint2` and the bottom row
+    stays empty.
+
+    Both lines are left-aligned (primary information, where the eye
+    starts reading). If `version_stamp` is given, it renders on the
+    primary line, right-aligned in DIM colour — metadata, secondary.
     """
     font = fonts.mono(_BODY_PT)
     y = HEIGHT - theme.FOOTER_HEIGHT
@@ -213,6 +246,10 @@ def footer(
             (WIDTH - 4 - stamp_w, y + 3),
             version_stamp, font=font, fill=theme.DIM,
         )
+    if hint2:
+        # Second row sits one ROW_HEIGHT below the first, with the
+        # same 3 px top padding.
+        draw.text((4, y + 3 + theme.ROW_HEIGHT), hint2, font=font, fill=theme.DIM)
 
 
 BANNER_HEIGHT: int = 14

@@ -41,12 +41,14 @@ from sigma_ptpy.enum import (  # noqa: E402
     DestToSave as _DestToSave,
     ExposureMode as _ExposureMode,
     FocusMode as _FocusMode,
+    ImageQuality as _ImageQuality,
     ISOAuto as _ISOAuto,
 )
 from sigma_ptpy.schema import (  # noqa: E402
     CamDataGroup1,
     CamDataGroup2,
     CamDataGroup3,
+    CamDataGroup4,
     CamDataGroupFocus,
     SnapCommand,
 )
@@ -147,6 +149,31 @@ class SigmaFpCamera:
         cam.open_session()
         cam.config_api()
         cam.set_cam_data_group3(CamDataGroup3(DestToSave=_DestToSave.InCamera))
+        # Silence the synthesized shutter click. config_api() resets the
+        # camera to PTP-session defaults — ShutterSound goes back to "on"
+        # regardless of what the STILL/CINE menu held, and the click then
+        # plays on every PTP-triggered capture. Push it back to 0 here.
+        try:
+            cam.set_cam_data_group4(CamDataGroup4(ShutterSound=0))
+            logger.info("sigma_fp: silenced ShutterSound on connect")
+        except Exception as e:
+            logger.warning("sigma_fp: could not silence ShutterSound: %s", e)
+        # Force ImageQuality=DNG. config_api() resets this to a
+        # session-default of JPEGFine — observed in the field
+        # 2026-06-01/02: an entire night of 4-bracket Luna timelapse
+        # silently saved as JPEG (lossy 8-bit, no highlight recovery,
+        # WB and tone baked) while the camera's menu still read DNG.
+        # The menu setting does NOT survive config_api(); explicit
+        # push is the only way.
+        try:
+            cam.set_cam_data_group2(
+                CamDataGroup2(ImageQuality=_ImageQuality.DNG))
+            logger.info("sigma_fp: forced ImageQuality=DNG on connect")
+        except Exception as e:
+            logger.warning(
+                "sigma_fp: could not force ImageQuality=DNG: %s — "
+                "captures will save as JPEG, lossy and not recoverable", e,
+            )
         # Force ExposureMode=Manual so the shutter / aperture / ISO we
         # push via set_params are respected. In ProgramAuto (the default
         # if the user has the dial on P) the fp silently overrides our

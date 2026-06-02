@@ -90,7 +90,7 @@ class TestOverlayFactories(unittest.TestCase):
         d = stop_confirm()
         self.assertEqual(d.title, "Stop the timelapse?")
         self.assertEqual(d.body, "Sync will be lost.")
-        self.assertEqual(d.hint, "OK yes        BACK no")
+        self.assertEqual(d.hint, "OK yes        ESC no")
 
     def test_discard_changes_has_no_body(self):
         d = discard_changes()
@@ -110,10 +110,10 @@ class TestOverlayFactories(unittest.TestCase):
 
     def test_save_confirm_with_warning_sets_body(self):
         from fp_lapse.ui import save_confirm
-        d = save_confirm(warning="Note: start date is in the past — won't fire.")
+        d = save_confirm(warning="Start date past — won't fire")
         self.assertEqual(d.title, "Save changes?")
         self.assertEqual(
-            d.body, "Note: start date is in the past — won't fire.",
+            d.body, "Start date past — won't fire",
         )
 
 

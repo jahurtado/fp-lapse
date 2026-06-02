@@ -566,10 +566,15 @@ class TestSetManualTime(unittest.TestCase):
 
 
 class TestComputeScheduleIndicator(unittest.TestCase):
-    def test_off_when_disabled(self):
+    def test_returns_would_be_color_when_disabled(self):
+        """§6 addendum: the indicator color reflects the would-be engine
+        state regardless of `schedule_enabled` — the UI surfaces the
+        disabled flag as a strikethrough on the clock glyph, not by
+        hiding the dot. With no trusted-clock baseline, that's RED."""
         app, tc, *_ = _make_app_with_schedule(self)
+        self.assertFalse(app.schedule_enabled)
         self.assertEqual(
-            app._compute_schedule_indicator(), ScheduleIndicator.OFF,
+            app._compute_schedule_indicator(), ScheduleIndicator.RED,
         )
 
     def test_red_when_enabled_no_baseline(self):
@@ -890,7 +895,8 @@ class TestPastDateWarning(unittest.TestCase):
         )
         w = _past_date_warning(cfg)
         self.assertIsNotNone(w)
-        self.assertIn("start", w)
+        # Capitalised at the start of the sentence ("Start date past…").
+        self.assertIn("Start", w)
 
 
 class TestMainScreenWallClockFromTrustedClock(unittest.TestCase):

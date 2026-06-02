@@ -30,7 +30,13 @@ from fp_lapse.ui.edit_screen import EditScreen, EditState  # noqa: E402
 from fp_lapse.ui.main_screen import MainScreen, UIState  # noqa: E402
 from fp_lapse.ui.manage_menu import ManageMenuState  # noqa: E402
 from fp_lapse.ui.manage_menu import render_manage_menu as _render_manage_menu  # noqa: E402
-from fp_lapse.ui.overlays import render_overlay, save_confirm, stop_confirm  # noqa: E402
+from fp_lapse.ui.overlays import (  # noqa: E402
+    poweroff_confirm,
+    render_overlay,
+    save_confirm,
+    stop_confirm,
+)
+from fp_lapse.ui.shutdown_screen import render_powering_off  # noqa: E402
 from fp_lapse.ui.picker_datetime import (  # noqa: E402
     DateTimePickerInteraction,
     render_datetime_picker,
@@ -297,6 +303,16 @@ def render_overlay_stop():
     return render_overlay(render_main_running_on_running(), stop_confirm())
 
 
+def render_overlay_poweroff():
+    """§7.8 — `Power off?` overlay on top of the idle main screen."""
+    return render_overlay(render_main_idle(), poweroff_confirm())
+
+
+def render_shutdown_powering_off():
+    """§7.8 — single `POWERING OFF…` screen with LED hint."""
+    return render_powering_off()
+
+
 def render_manage_menu():
     """Manage menu overlay opened via long-press OK on Totality — productive code."""
     return _render_manage_menu(
@@ -310,7 +326,9 @@ def render_manage_menu():
 # ----------------------------------------------------------------------
 
 
-def _render_main_idle_with_schedule(state: ScheduleIndicator):
+def _render_main_idle_with_schedule(
+    state: ScheduleIndicator, *, disabled: bool = False,
+):
     """Main IDLE rendered with the given schedule indicator state."""
     return MainScreen().render(UIState(
         configs=(_PARTIAL, _TOTALITY, _FREE),
@@ -323,6 +341,7 @@ def _render_main_idle_with_schedule(state: ScheduleIndicator):
         camera_connected=True,
         wall_clock_str="18:42:07",
         schedule_state=state,
+        schedule_disabled=disabled,
     ))
 
 
@@ -340,6 +359,16 @@ def render_main_idle_schedule_green():
 
 def render_main_idle_schedule_yellow():
     return _render_main_idle_with_schedule(ScheduleIndicator.YELLOW)
+
+
+def render_main_idle_schedule_disabled():
+    """§6 addendum: schedule is disabled. Clock glyph carries a
+    diagonal strikethrough while the dot still shows the would-be
+    color (GREEN here — the operator turned scheduling off after a
+    successful first sync)."""
+    return _render_main_idle_with_schedule(
+        ScheduleIndicator.GREEN, disabled=True,
+    )
 
 
 def render_edit_with_schedule():
@@ -401,7 +430,7 @@ def render_overlay_save_with_warning():
     base = EditScreen().render(EditState(cfg=cfg, field_cursor=3, scroll_offset=0))
     return render_overlay(
         base,
-        save_confirm(warning="Note: start date is in the past — won't fire."),
+        save_confirm(warning="Start date past — won't fire"),
     )
 
 
@@ -483,6 +512,12 @@ def main():
     save(render_main_idle_time_setup_menu(),  "14_main_idle_time_setup_menu")
     save(render_main_idle_with_scheduled_configs(),
          "15_main_idle_with_scheduled_configs")
+    # §7.8 — safe shutdown.
+    save(render_overlay_poweroff(),       "16_overlay_poweroff")
+    save(render_shutdown_powering_off(),  "17_powering_off")
+    # §6 addendum — schedule disabled with strikethrough.
+    save(render_main_idle_schedule_disabled(),
+         "19_main_idle_schedule_disabled")
     print("Done.")
 
 

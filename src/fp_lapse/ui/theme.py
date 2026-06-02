@@ -48,4 +48,8 @@ COL_APER: Final[int] = 208
 ROW_HEIGHT: Final[int] = 12
 HEADER_HEIGHT: Final[int] = 13
 STATUS_BAR_Y_LINE: Final[int] = 18  # separator y
-FOOTER_HEIGHT: Final[int] = 16
+# Footer is two mono-11 rows: primary action hint on top, secondary
+# (global LEFT/RIGHT/chord) on the bottom. Single-line callers
+# (edit_screen, picker_datetime) keep using the top row only and the
+# bottom row stays empty for them — same as a tall blank footer.
+FOOTER_HEIGHT: Final[int] = 28

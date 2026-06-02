@@ -520,7 +520,7 @@ def render_datetime_picker(
 
     # Footer hint
     widgets.footer(
-        draw, "↑↓ digit  ←→ pos  OK save  BACK cancel",
+        draw, "↑↓ digit  ←→ pos  OK save  ESC cancel",
     )
 
     return rgba.convert("RGB")

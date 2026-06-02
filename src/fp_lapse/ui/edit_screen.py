@@ -140,7 +140,7 @@ class EditScreen:
                 font=font, fill=theme.DIM,
             )
 
-        widgets.footer(draw, "↑↓ field   ←→ edit   OK save   BACK")
+        widgets.footer(draw, "↑↓ field   ←→ edit   OK save   ESC")
         return canvas
 
 
