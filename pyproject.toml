@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fp-lapse"
-version = "1.3.0"
+version = "1.4.0"
 description = "Intervalometer and timelapse controller for the Sigma fp and Nikon D5600, running on a Raspberry Pi with TFT + buttons."
 readme = "README.md"
 requires-python = ">=3.11"

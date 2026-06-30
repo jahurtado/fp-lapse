@@ -46,6 +46,21 @@ from fp_lapse.ui.time_setup_menu import (  # noqa: E402
     TimeSetupMenuState,
     render_time_setup_menu,
 )
+from fp_lapse.net.nmcli import (  # noqa: E402
+    ConnectOutcome,
+    WifiNetwork,
+)
+from fp_lapse.ui.keyboard import (  # noqa: E402
+    KeyboardState,
+    render_keyboard,
+)
+from fp_lapse.ui.overlays import wifi_forget_confirm  # noqa: E402
+from fp_lapse.ui.wifi_screen import (  # noqa: E402
+    WifiListState,
+    WifiStatusState,
+    render_wifi_list,
+    render_wifi_status,
+)
 
 W, H = 320, 240
 
@@ -484,6 +499,84 @@ def render_main_idle_with_scheduled_configs():
     ))
 
 
+# ----------------------------------------------------------------------
+# wifi-manual-config — SETTINGS menu, Wi-Fi list, keyboard, status
+# ----------------------------------------------------------------------
+
+_WIFI_NETS = (
+    WifiNetwork("MyHomeWiFi", 72, secured=True, active=True, saved=True),
+    WifiNetwork("Guest_Network", 55, secured=True, active=False, saved=False),
+    WifiNetwork("CoffeeShop", 48, secured=False, active=False, saved=False),
+    WifiNetwork("Router_5G", 30, secured=True, active=False, saved=False),
+    WifiNetwork("Cabin_5G", 12, secured=True, active=False, saved=False),
+)
+
+
+def render_settings_menu():
+    """The flat SETTINGS menu (3 items) over the idle main screen."""
+    return render_time_setup_menu(render_main_idle(), TimeSetupMenuState(cursor=0))
+
+
+def render_wifi_list_mockup():
+    """Wi-Fi network list with the active/saved network highlighted."""
+    return render_wifi_list(
+        render_main_idle(),
+        WifiListState(_WIFI_NETS, cursor=0, scanning=False),
+        dots=None,
+    )
+
+
+def render_keyboard_password():
+    """Virtual keyboard, abc layer, password target (masked, mask key)."""
+    state = KeyboardState(
+        target="password", text="hunter7", layer="abc", masked=True,
+        cursor_row=3, cursor_col=3,   # mask key under the cursor
+    )
+    return render_keyboard(render_main_idle(), state, title="Wi-Fi password")
+
+
+def render_keyboard_ssid():
+    """Virtual keyboard, abc layer, ssid target (no mask key)."""
+    state = KeyboardState(
+        target="ssid", text="Hidden", layer="abc", masked=False,
+        cursor_row=0, cursor_col=0,
+    )
+    return render_keyboard(render_main_idle(), state, title="Network name")
+
+
+def render_wifi_connecting():
+    return render_wifi_status(
+        render_main_idle(),
+        WifiStatusState(phase="connecting", ssid="MyHomeWiFi"),
+        dots=2,
+    )
+
+
+def render_wifi_connected():
+    return render_wifi_status(
+        render_main_idle(),
+        WifiStatusState(phase="connected", ssid="MyHomeWiFi", ip="192.168.1.42"),
+        dots=None,
+    )
+
+
+def render_wifi_failed():
+    return render_wifi_status(
+        render_main_idle(),
+        WifiStatusState(
+            phase="failed", ssid="MyHomeWiFi",
+            outcome=ConnectOutcome.BAD_AUTH,
+            detail="secrets were required",
+        ),
+        dots=None,
+    )
+
+
+def render_wifi_forget_confirm_mockup():
+    base = render_wifi_list_mockup()
+    return render_overlay(base, wifi_forget_confirm("MyHomeWiFi"))
+
+
 # Main ----------------------------------------------------------------
 OUT = Path(__file__).parent
 
@@ -518,6 +611,15 @@ def main():
     # §6 addendum — schedule disabled with strikethrough.
     save(render_main_idle_schedule_disabled(),
          "19_main_idle_schedule_disabled")
+    # wifi-manual-config — SETTINGS menu + Wi-Fi flow.
+    save(render_settings_menu(),                "20_settings_menu")
+    save(render_wifi_list_mockup(),             "21_wifi_list")
+    save(render_keyboard_password(),            "22_keyboard_password_abc")
+    save(render_keyboard_ssid(),                "23_keyboard_ssid")
+    save(render_wifi_connecting(),              "24_wifi_connecting")
+    save(render_wifi_connected(),               "25_wifi_connected")
+    save(render_wifi_failed(),                  "26_wifi_failed")
+    save(render_wifi_forget_confirm_mockup(),   "27_wifi_forget_confirm")
     print("Done.")
 
 

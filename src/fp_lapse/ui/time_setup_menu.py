@@ -1,8 +1,15 @@
-"""TIME SETUP menu modal (prd2.md §6 — Time Setup menu).
+"""SETTINGS menu modal (prd2.md §6 + wifi-manual-config §1).
 
-Opened by short-pressing LEFT on the main screen. Two items:
+Opened by short-pressing LEFT on the main screen. Flat, single-level —
+three items:
 
-    Force NTP sync · Set manually
+    Sync Time (NTP) · Set Time (Manual) · Wi-Fi setup
+
+The first two are the original TIME SETUP items, relabelled — their
+dispatch behaviour (`FORCE_NTP_SYNC` / `SET_MANUALLY`) is unchanged. The
+third (`WIFI_SETUP`) opens the on-device Wi-Fi setup flow. Module and
+symbol names keep the historical `TimeSetup*` spelling for a legible
+diff (the optional rename in the PRD was not taken).
 
 Mirrors the structural conventions of `manage_menu.py` (shaded base,
 centered dialog, header, selection band). BACK closes the menu without
@@ -23,11 +30,13 @@ from . import fonts, theme, widgets
 
 _BODY_PT: int = 11
 
-MENU_ITEMS: Tuple[str, ...] = ("Force NTP sync", "Set manually")
+MENU_ITEMS: Tuple[str, ...] = (
+    "Sync Time (NTP)", "Set Time (Manual)", "Wi-Fi setup",
+)
 
-# Box geometry — sized to wrap the two items + title comfortably.
+# Box geometry — sized to wrap the three items + title comfortably.
 _BOX_W: int = 200
-_BOX_H: int = 78
+_BOX_H: int = 96
 _BOX_X: int = (WIDTH - _BOX_W) // 2
 _BOX_Y: int = (HEIGHT - _BOX_H) // 2
 
@@ -85,7 +94,7 @@ def render_time_setup_menu(
     # Title + separator
     draw.text(
         (_BOX_X + _HEADER_X_PAD, _BOX_Y + _HEADER_Y),
-        "TIME SETUP", font=font, fill=theme.FG,
+        "SETTINGS", font=font, fill=theme.FG,
     )
     draw.line(
         [
@@ -138,16 +147,18 @@ def render_time_setup_menu(
 
 
 class TimeSetupMenuAction(str, Enum):
-    """Action selected from the TIME SETUP menu (prd2.md §6)."""
+    """Action selected from the SETTINGS menu (prd2.md §6 + wifi §1)."""
 
     FORCE_NTP_SYNC = "force_ntp_sync"
     SET_MANUALLY = "set_manually"
+    WIFI_SETUP = "wifi_setup"
     CANCEL = "cancel"
 
 
 _ACTION_BY_INDEX: Tuple[TimeSetupMenuAction, ...] = (
     TimeSetupMenuAction.FORCE_NTP_SYNC,
     TimeSetupMenuAction.SET_MANUALLY,
+    TimeSetupMenuAction.WIFI_SETUP,
 )
 assert len(_ACTION_BY_INDEX) == len(MENU_ITEMS)
 

@@ -78,6 +78,12 @@ def poweroff_confirm() -> OverlayDialog:
     return OverlayDialog(title="Power off?")
 
 
+def wifi_forget_confirm(ssid: str) -> OverlayDialog:
+    """Wi-Fi list → long-press OK on a saved network: confirms the
+    profile deletion (`nmcli connection delete`)."""
+    return OverlayDialog(title=f"Forget '{ssid}'?")
+
+
 def render_overlay(base: Image.Image, dialog: OverlayDialog) -> Image.Image:
     """Compose `dialog` on top of `base`. Returns a fresh RGB 320x240 image."""
     # Addendum G: opaque screen transition (see picker_datetime.py).

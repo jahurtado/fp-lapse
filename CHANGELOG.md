@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-06-30
+
+Adds **manual Wi-Fi configuration from the device itself** — no SSH, no
+external keyboard. In the field (a fresh shooting location, eclipse day
+in Benavente) the operator can now point the box at a new network from
+the TFT and the 6 buttons alone, so the schedule layer's trusted clock
+can anchor from NTP. This ships the project's **first on-screen virtual
+keyboard**, the sub-screen `docs/reference.md §7.6` had deferred until a
+real case justified it.
+
+### Added
+
+- **SETTINGS menu (LEFT on the main screen).** The former TIME SETUP
+  modal becomes a flat, single-level `SETTINGS` menu — `Sync Time (NTP)`
+  · `Set Time (Manual)` · `Wi-Fi setup`. The first two are the existing
+  clock items, relabelled so they read as device-clock actions; their
+  behaviour is unchanged.
+- **Wi-Fi setup flow.** Scan nearby networks (cached on entry, with an
+  explicit `Rescan`), pick one — signal-strength glyph, lock marker for
+  secured, a green `●` on the active network, plus `Other network…` for
+  a hidden/typed SSID — then connect off the UI thread with a
+  `Connecting…` animation and a 30 s timeout, ending on a clear
+  `Connected` (with the obtained IP) or failure screen. Backed by a
+  thin, import-safe `nmcli` wrapper (`src/fp_lapse/net/nmcli.py`,
+  modelled on `shutdown.py`); runs as root (the service already does)
+  and stays mock-driven on the Mac dev harness.
+- **On-screen virtual keyboard (`src/fp_lapse/ui/keyboard.py`).** An
+  alphabetical grid with a layer key cycling `abc → ABC → 123 → #+=`
+  (full printable-ASCII coverage), `␣` / `⌫` / `✓ Done`, and a masked
+  password with a show/hide toggle. Built generically (carries a
+  `target` discriminator) but wired only to the Wi-Fi SSID/password
+  fields for now.
+- **Per-network gestures on the list.** Short **OK** connects — open or
+  already-saved networks join with stored credentials (no keyboard);
+  a secured network with no saved profile opens the keyboard. **Hold
+  OK** edits/replaces the password. **Hold ESC** forgets a saved
+  network (behind a `Forget?` confirmation). The OK+ESC safe-shutdown
+  chord still supersedes either single-button long-press.
+
+### Changed
+
+- Main-screen footer hint `← time setup` → `← settings`.
+- `ButtonRouter` now arms a long-press timer for **both** OK and ESC
+  (was OK-only), so the list can distinguish short (connect / back) from
+  long (edit / forget) presses; the shutdown chord keeps priority.
+
+### Fixed
+
+- After a successful connect, the network list is re-scanned and the
+  active `●` marker (and `saved` flag) reconciled against the live
+  connection, so the dot follows the network you just joined instead of
+  sticking to the one from the entry scan.
+
 ## [1.3.0] — 2026-06-02
 
 Closes two silent data-loss footguns in the PTP capture path that a

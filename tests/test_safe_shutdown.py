@@ -126,6 +126,42 @@ class TestChordDetection(unittest.TestCase):
             # OK long-press did NOT fire.
             self.assertEqual(lp_calls, [])
 
+    # --- Revision 1: BACK single long-press + chord precedence ---------
+
+    def test_ok_single_long_press_fires_with_ok_id(self):
+        for _router, panel, _chord_calls, lp_calls in self._drive():
+            panel.press(ButtonId.OK)
+            time.sleep(_TEST_HOLD_S * 2)
+            panel.release(ButtonId.OK)
+            self.assertEqual(lp_calls, [ButtonId.OK])
+
+    def test_back_single_long_press_fires_with_back_id(self):
+        # Revision 1: BACK now has its own long-press timer (Wi-Fi forget).
+        for _router, panel, _chord_calls, lp_calls in self._drive():
+            panel.press(ButtonId.BACK)
+            time.sleep(_TEST_HOLD_S * 2)
+            panel.release(ButtonId.BACK)
+            self.assertEqual(lp_calls, [ButtonId.BACK])
+
+    def test_back_long_press_cancelled_on_release(self):
+        for _router, panel, _chord_calls, lp_calls in self._drive():
+            panel.press(ButtonId.BACK)
+            time.sleep(_TEST_HOLD_S / 2)
+            panel.release(ButtonId.BACK)
+            time.sleep(_TEST_HOLD_S * 2)
+            self.assertEqual(lp_calls, [])
+
+    def test_chord_supersedes_back_long_press(self):
+        """Holding BACK then adding OK must fire the chord, never the
+        BACK long-press (Wi-Fi forget)."""
+        for _router, panel, chord_calls, lp_calls in self._drive():
+            panel.press(ButtonId.BACK)      # arms BACK long-press
+            time.sleep(_TEST_HOLD_S / 4)
+            panel.press(ButtonId.OK)        # should cancel BACK long-press
+            time.sleep(_TEST_HOLD_S * 2)
+            self.assertEqual(len(chord_calls), 1)
+            self.assertEqual(lp_calls, [])
+
 
 # --- 2. App dispatch ------------------------------------------------------
 

@@ -252,7 +252,7 @@ class TestFooterHintTwoLines(unittest.TestCase):
     """Two-line footer (§7.8 addendum): `footer_hint` returns
     `(primary, secondary)`. Primary depends on state (OK/BACK/hold OK
     actions). Secondary is constant — it carries the global shortcuts
-    (`← time setup`, `→ sched on/off`, `OK+BACK shutdown`) so they
+    (`← settings`, `→ sched on/off`, `OK+BACK shutdown`) so they
     stay discoverable in every state without crowding the primary
     line."""
 
@@ -285,7 +285,7 @@ class TestFooterHintTwoLines(unittest.TestCase):
     # --- secondary is the same constant in every state ---
 
     def _assert_secondary_complete(self, secondary: str) -> None:
-        self.assertIn("← time setup", secondary)
+        self.assertIn("← settings", secondary)
         self.assertIn("→ sched on/off", secondary)
         self.assertIn("OK+ESC shutdown", secondary)
         # No leftover from the old single-line format.

@@ -200,12 +200,12 @@ class MainScreen:
 
 # Secondary footer line — same for every main-screen state. Carries
 # the three global shortcuts that aren't state-dependent:
-#   LEFT       → opens the TIME SETUP modal menu
+#   LEFT       → opens the SETTINGS modal menu
 #   RIGHT      → toggles the persisted `schedule_enabled` flag
 #   BACK+OK    → safe shutdown chord (§7.8), 3 s hold
-# Width budget at mono-11: ~44 chars × ~6.5 px = ~286 px (fits within
+# Width budget at mono-11: ~42 chars × ~7 px = ~294 px (fits within
 # the ~312 px usable area with comfortable margin).
-_SECONDARY_HINT: str = "← time setup  → sched on/off  OK+ESC shutdown"
+_SECONDARY_HINT: str = "← settings  → sched on/off  OK+ESC shutdown"
 
 
 def footer_hint(state: UIState) -> tuple[str, str]:

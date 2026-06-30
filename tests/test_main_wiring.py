@@ -115,25 +115,26 @@ class TestScheduleLoopWiring(unittest.TestCase):
             self.assertNotIn(needle, src)
 
 
-class TestButtonRouterUnchanged(unittest.TestCase):
-    """prd2.md §6.1: LEFT must NOT acquire long-press machinery."""
+class TestButtonRouterLongPress(unittest.TestCase):
+    """Revision 1 — only OK and BACK carry a single-button long-press;
+    the directional buttons (LEFT/RIGHT/UP/DOWN) never do."""
 
-    def test_left_long_press_not_armed(self):
-        from fp_lapse.buttons.iface import ButtonId
+    def test_only_ok_and_back_get_long_press(self):
         src = inspect.getsource(main_mod.ButtonRouter)
-        # The long-press arm only fires on OK; if LEFT ever appears in
-        # the arm path this regression catches it.
-        self.assertIn("if bid == ButtonId.OK:", src)
-        # The arm helper must not be invoked for any non-OK button. A
-        # broader assertion: only the OK branch should call
-        # `_arm_long_press`.
-        arm_count = src.count("_arm_long_press")
-        # One call from on_press(OK) + the method definition itself.
-        self.assertLessEqual(arm_count, 3)
-        # And no explicit check on ButtonId.LEFT in the press path.
-        # (A future implementer adding `if bid == ButtonId.LEFT: …` to
-        # arm a timer would land in `on_press`; this test fails first.)
-        self.assertNotIn("ButtonId.LEFT", src)
+        # The long-press-eligible set is exactly OK and BACK.
+        self.assertIn("_LONG_PRESS_BUTTONS = (ButtonId.OK, ButtonId.BACK)", src)
+        # No directional button may appear anywhere in the router (a
+        # future implementer arming a timer for one would land here).
+        for name in ("ButtonId.LEFT", "ButtonId.RIGHT", "ButtonId.UP", "ButtonId.DOWN"):
+            self.assertNotIn(name, src)
+
+    def test_long_press_fires_with_real_button_id(self):
+        # The fired timer must forward the actual button id, so BACK
+        # long-press reaches `app.on_long_press(BACK)` (not a hard-coded
+        # OK as in the pre-Revision-1 router).
+        src = inspect.getsource(main_mod.ButtonRouter)
+        self.assertIn("self._app.on_long_press(bid)", src)
+        self.assertNotIn("self._app.on_long_press(ButtonId.OK)", src)
 
 
 if __name__ == "__main__":

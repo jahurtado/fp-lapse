@@ -122,10 +122,14 @@ class ButtonRouter:
     Responsibilities:
 
     - Forward press / release to `app.on_press` / `app.on_release`.
-    - Arm a `threading.Timer` on OK press and cancel it on release;
-      when the timer fires (3 s elapsed), call `app.on_long_press`.
+    - Arm a per-button `threading.Timer` on **OK and BACK** press and
+      cancel it on that button's release; when a timer fires (3 s
+      elapsed), call `app.on_long_press(bid)` with the real button id.
+      OK long-press = edit / manage; BACK long-press = forget (Wi-Fi
+      list, Revision 1).
     - Detect the BACK+OK chord (both held for 3 s) and call
-      `app.on_safe_shutdown_chord()` when it completes (§7.8).
+      `app.on_safe_shutdown_chord()` when it completes (§7.8). The chord
+      supersedes **either** single-button long-press.
     - Set `dirty_event` after every dispatch so the UI thread
       re-renders promptly.
 
@@ -133,14 +137,19 @@ class ButtonRouter:
     callback. The handlers themselves take `app.lock` internally.
     """
 
+    # Single buttons that carry a long-press gesture. LEFT/RIGHT/UP/DOWN
+    # never do (a future implementer adding one would land here).
+    _LONG_PRESS_BUTTONS = (ButtonId.OK, ButtonId.BACK)
+
     def __init__(self, *, app: App, dirty_event: threading.Event) -> None:
         self._app = app
         self._dirty = dirty_event
         # Single lock protects both timers AND the pressed-set so the
-        # chord detector doesn't race with the OK long-press logic
-        # when BACK arrives while OK is already held.
+        # chord detector doesn't race with the single-button long-press
+        # logic when BACK arrives while OK is already held.
         self._timer_lock = threading.Lock()
-        self._lp_timer: Optional[threading.Timer] = None
+        # Per-button long-press timers (OK and BACK).
+        self._lp_timers: dict[ButtonId, threading.Timer] = {}
         self._chord_timer: Optional[threading.Timer] = None
         self._pressed: set[ButtonId] = set()
 
@@ -157,21 +166,23 @@ class ButtonRouter:
             logger.exception("on_press(%s) raised", bid.name)
         with self._timer_lock:
             self._pressed.add(bid)
-            if bid == ButtonId.OK:
-                self._arm_long_press_locked()
-            # Chord supersedes OK long-press: as soon as both BACK
-            # and OK are held, drop any pending long-press timer so a
-            # 3 s hold doesn't pop the manage menu.
+            if bid in self._LONG_PRESS_BUTTONS:
+                self._arm_long_press_locked(bid)
+            # Chord supersedes either single-button long-press: as soon
+            # as both BACK and OK are held, drop BOTH pending long-press
+            # timers so a 3 s hold fires the shutdown chord, not the
+            # manage menu / forget overlay.
             if ButtonId.BACK in self._pressed and ButtonId.OK in self._pressed:
-                self._cancel_long_press_locked()
+                self._cancel_long_press_locked(ButtonId.OK)
+                self._cancel_long_press_locked(ButtonId.BACK)
                 self._arm_chord_locked()
         self._dirty.set()
 
     def on_release(self, bid: ButtonId) -> None:
         with self._timer_lock:
             self._pressed.discard(bid)
-            if bid == ButtonId.OK:
-                self._cancel_long_press_locked()
+            if bid in self._LONG_PRESS_BUTTONS:
+                self._cancel_long_press_locked(bid)
             # Releasing either chord member breaks the chord.
             if bid in (ButtonId.BACK, ButtonId.OK):
                 self._cancel_chord_locked()
@@ -181,25 +192,27 @@ class ButtonRouter:
             logger.exception("on_release(%s) raised", bid.name)
         self._dirty.set()
 
-    # --- single-button OK long-press (existing behavior, §7.5) ---
+    # --- per-button single long-press (OK = §7.5; BACK = forget) ---
 
-    def _arm_long_press_locked(self) -> None:
-        if self._lp_timer is not None:
-            self._lp_timer.cancel()
-        self._lp_timer = threading.Timer(LONG_PRESS_S, self._fire_long_press)
-        self._lp_timer.daemon = True
-        self._lp_timer.start()
+    def _arm_long_press_locked(self, bid: ButtonId) -> None:
+        existing = self._lp_timers.get(bid)
+        if existing is not None:
+            existing.cancel()
+        timer = threading.Timer(LONG_PRESS_S, self._fire_long_press, args=(bid,))
+        timer.daemon = True
+        self._lp_timers[bid] = timer
+        timer.start()
 
-    def _cancel_long_press_locked(self) -> None:
-        if self._lp_timer is not None:
-            self._lp_timer.cancel()
-            self._lp_timer = None
+    def _cancel_long_press_locked(self, bid: ButtonId) -> None:
+        timer = self._lp_timers.pop(bid, None)
+        if timer is not None:
+            timer.cancel()
 
-    def _fire_long_press(self) -> None:
+    def _fire_long_press(self, bid: ButtonId) -> None:
         try:
-            self._app.on_long_press(ButtonId.OK)
+            self._app.on_long_press(bid)
         except Exception:
-            logger.exception("on_long_press(OK) raised")
+            logger.exception("on_long_press(%s) raised", bid.name)
         self._dirty.set()
 
     # --- BACK+OK chord (safe shutdown, §7.8) ---

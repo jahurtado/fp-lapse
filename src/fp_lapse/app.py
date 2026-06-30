@@ -33,6 +33,7 @@ from typing import Callable, List, Optional
 
 from PIL import Image
 
+from .buttons.iface import ButtonId
 from .camera import Camera
 from .configs import (
     ConfigStore,
@@ -52,12 +53,15 @@ from .schedule import (
 )
 from .schedule.moment import ScheduledMoment
 from .shutdown import do_shutdown
+from .net.nmcli import ConnectOutcome
 from .ui import (
     DateTimePickerInteraction,
     EditAction,
     EditScreen,
     EditScreenInteraction,
     EditState,
+    KeyboardAction,
+    KeyboardInteraction,
     MainAction,
     MainActionResult,
     MainScreen,
@@ -71,17 +75,25 @@ from .ui import (
     TimeSetupMenuInteraction,
     TimeSetupMenuState,
     UIState,
+    WifiListAction,
+    WifiListInteraction,
+    WifiListState,
+    WifiStatusState,
     handle_overlay_button,
     poweroff_confirm,
     render_datetime_picker,
+    render_keyboard,
     render_manage_menu,
     render_overlay,
     render_powering_off,
     render_time_setup_menu,
+    render_wifi_list,
+    render_wifi_status,
     delete_confirm,
     discard_changes,
     save_confirm,
     stop_confirm,
+    wifi_forget_confirm,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +117,36 @@ def _default_sync_worker_spawner(fn: Callable[[], None]) -> None:
     runs `fn()` inline so the worker behaviour is deterministic.
     """
     threading.Thread(target=fn, daemon=True, name="sync-worker").start()
+
+
+def _default_wifi_worker_spawner(fn: Callable[[], None]) -> None:
+    """Default spawner for the off-thread Wi-Fi connect/scan worker.
+
+    Same idiom as `_default_sync_worker_spawner`: a daemon thread so the
+    UI thread never blocks on the (up to 30 s) `nmcli` subprocess. Tests
+    inject a synchronous spawner so the worker runs inline.
+    """
+    threading.Thread(target=fn, daemon=True, name="wifi-worker").start()
+
+
+def _default_nmcli():
+    """Pick the nmcli facade: mock on the Mac dev path, real on the Pi.
+
+    Reuses the same gate as the camera layer (`FP_LAPSE_CAMERA == mock`
+    or `sys.platform == "darwin"`) so the whole Wi-Fi flow is
+    exercisable in the Tk dev harness with no hardware.
+    """
+    import os
+    import sys
+
+    from .net.nmcli import make_nmcli
+
+    use_mock = (
+        os.environ.get("FP_LAPSE_CAMERA", "").strip().lower() == "mock"
+        or os.environ.get("FP_LAPSE_MOCK") == "1"
+        or sys.platform == "darwin"
+    )
+    return make_nmcli(use_mock=use_mock, connect_delay_s=0.8 if use_mock else 0.0)
 
 
 def _past_date_warning(cfg: TimelapseConfig) -> Optional[str]:
@@ -141,6 +183,11 @@ class AppState(str, Enum):
     # §7.8 — safe shutdown via BACK+OK chord.
     OVERLAY_POWEROFF = "overlay_poweroff"  # "Power off?" confirmation
     SHUTTING_DOWN = "shutting_down"        # phase 1 after confirm
+    # wifi-manual-config — on-device Wi-Fi setup flow.
+    WIFI_LIST = "wifi_list"                # network scan list
+    WIFI_KEYBOARD = "wifi_keyboard"        # virtual keyboard (ssid or password)
+    WIFI_STATUS = "wifi_status"            # connecting / connected / failed
+    OVERLAY_WIFI_FORGET = "overlay_wifi_forget"  # "Forget network?" confirm
 
 
 class App:
@@ -152,6 +199,8 @@ class App:
         camera: Camera,
         now_monotonic: Callable[[], float] = time.monotonic,
         shutdown_action: Optional[Callable[[], None]] = None,
+        nmcli=None,
+        wifi_worker_spawner: Optional[Callable[[Callable[[], None]], None]] = None,
     ) -> None:
         self.scheduler = scheduler
         self.store = store
@@ -232,6 +281,29 @@ class App:
             _default_timedatectl_runner
         )
 
+        # -- wifi-manual-config — on-device Wi-Fi setup flow ----------
+        # Interactions exist only while their state is active.
+        self.wifi_list_ix: Optional[WifiListInteraction] = None
+        self.keyboard_ix: Optional[KeyboardInteraction] = None
+        self.wifi_networks: tuple = ()
+        self.wifi_status_state: Optional[WifiStatusState] = None
+        # (ssid, secured, hidden) stashed between the list pick / SSID
+        # keyboard and the connect worker.
+        self._wifi_pending: Optional[tuple] = None
+        self._wifi_forget_target: Optional[str] = None
+        # True while a connect/scan worker is in flight — gates buttons
+        # inert and drives the Connecting…/Scanning… dots animation
+        # (mirrors `_syncing`).
+        self._wifi_busy: bool = False
+        self._wifi_busy_started_mono: float = 0.0
+        # Injected nmcli facade (real on Pi, mock on Mac) + worker
+        # spawner — both injectable so tests run the worker synchronously
+        # and feed canned results.
+        self._nmcli = nmcli if nmcli is not None else _default_nmcli()
+        self._wifi_worker_spawner: Callable[[Callable[[], None]], None] = (
+            wifi_worker_spawner or _default_wifi_worker_spawner
+        )
+
     @property
     def engine(self):
         """The underlying engine, exposed for status reads only.
@@ -297,6 +369,32 @@ class App:
                     self._dispatch_picker_save()
                 elif r is PickerAction.CANCEL:
                     self._dispatch_picker_cancel()
+            elif self.state == AppState.WIFI_LIST:
+                if self.wifi_list_ix is None:
+                    return
+                # Scanning → every button inert (mirrors `_syncing`).
+                if self._wifi_busy:
+                    return
+                r = self.wifi_list_ix.on_press(button)
+                if r is not None:
+                    self._dispatch_wifi_list(r)
+            elif self.state == AppState.WIFI_KEYBOARD:
+                if self.keyboard_ix is None:
+                    return
+                r = self.keyboard_ix.on_press(button)
+                if r is KeyboardAction.DONE:
+                    self._dispatch_keyboard_done()
+                elif r is KeyboardAction.CANCEL:
+                    self._dispatch_keyboard_cancel()
+            elif self.state == AppState.WIFI_STATUS:
+                # Connecting → inert; once settled OK/BACK navigate.
+                if self._wifi_busy:
+                    return
+                self._dispatch_wifi_status(button)
+            elif self.state == AppState.OVERLAY_WIFI_FORGET:
+                r = handle_overlay_button(button)
+                if r is not None:
+                    self._dispatch_wifi_forget(r)
             elif self.state == AppState.OVERLAY_POWEROFF:
                 # §7.8: OK confirms shutdown, BACK returns to the
                 # screen that was visible when the chord fired.
@@ -324,9 +422,17 @@ class App:
                 )
                 if r is not None:
                     self._dispatch_main(r)
+            elif self.state == AppState.WIFI_LIST and self.wifi_list_ix is not None:
+                # Revision 1: short OK/BACK fire on release so they are
+                # distinguishable from the long-press edit/forget hooks.
+                if self._wifi_busy:
+                    return
+                r = self.wifi_list_ix.on_release(button)
+                if r is not None:
+                    self._dispatch_wifi_list(r)
 
     def on_long_press(self, button) -> None:
-        """Long-press hook. Currently only the main screen consumes it."""
+        """Long-press hook. Consumed by the main screen and the Wi-Fi list."""
         with self.lock:
             if self.state == AppState.MAIN:
                 r = self.main_ix.on_long_press(
@@ -335,6 +441,12 @@ class App:
                 )
                 if r is not None:
                     self._dispatch_main(r)
+            elif self.state == AppState.WIFI_LIST and self.wifi_list_ix is not None:
+                if self._wifi_busy:
+                    return
+                r = self.wifi_list_ix.on_long_press(button)
+                if r is not None:
+                    self._dispatch_wifi_list(r)
 
     def on_safe_shutdown_chord(self) -> None:
         """BACK+OK held 3 s — open the `Power off?` overlay (§7.8).
@@ -427,6 +539,37 @@ class App:
                 # and persists through the kernel halt thanks to the
                 # pitft22's internal frame memory.
                 return render_powering_off()
+            if self.state == AppState.WIFI_LIST and self.wifi_list_ix is not None:
+                return render_wifi_list(
+                    main_img,
+                    WifiListState(
+                        self.wifi_networks, self.wifi_list_ix.cursor,
+                        scanning=self._wifi_busy,
+                    ),
+                    dots=self._wifi_dots(),
+                )
+            if self.state == AppState.WIFI_KEYBOARD and self.keyboard_ix is not None:
+                title = (
+                    "Network name" if self.keyboard_ix.target == "ssid"
+                    else "Wi-Fi password"
+                )
+                return render_keyboard(main_img, self.keyboard_ix.state, title=title)
+            if self.state == AppState.WIFI_STATUS and self.wifi_status_state is not None:
+                return render_wifi_status(
+                    main_img, self.wifi_status_state, dots=self._wifi_dots(),
+                )
+            if self.state == AppState.OVERLAY_WIFI_FORGET and self.wifi_list_ix is not None:
+                wifi_img = render_wifi_list(
+                    main_img,
+                    WifiListState(
+                        self.wifi_networks, self.wifi_list_ix.cursor,
+                        scanning=False,
+                    ),
+                    dots=None,
+                )
+                return render_overlay(
+                    wifi_img, wifi_forget_confirm(self._wifi_forget_target or "?"),
+                )
             return main_img
 
     def _render_edit_image(self) -> Image.Image:
@@ -771,6 +914,21 @@ class App:
             self.state = AppState.PICKER
             self.time_setup_ix = None
             return
+        if action == TimeSetupMenuAction.WIFI_SETUP:
+            # Open the Wi-Fi list with a CACHED scan (fast, no --rescan).
+            # Runs inline: the cached scan is quick; only the explicit
+            # Rescan goes off-thread.
+            try:
+                networks = tuple(self._nmcli.scan())
+            except Exception:
+                logger.exception("wifi cached scan failed")
+                networks = ()
+            self.wifi_networks = networks
+            self.wifi_list_ix = WifiListInteraction(networks)
+            self.wifi_list_ix.reset_input()
+            self.state = AppState.WIFI_LIST
+            self.time_setup_ix = None
+            return
         # CANCEL — no side effect.
         self.state = AppState.MAIN
         self.time_setup_ix = None
@@ -831,6 +989,224 @@ class App:
         )
         self.picker_ix = None
         self.state = return_to
+
+    # -- Wi-Fi dispatch & worker (wifi-manual-config §5) -----------------
+
+    def _dispatch_wifi_list(self, action: WifiListAction) -> None:
+        assert self.wifi_list_ix is not None
+        state = WifiListState(
+            self.wifi_networks, self.wifi_list_ix.cursor, scanning=self._wifi_busy,
+        )
+        if action == WifiListAction.CONNECT:
+            net = self.wifi_list_ix.selected_network(state)
+            if net is None:
+                return
+            if net.secured and not net.saved:
+                # Secured, no stored profile → ask for the password first.
+                self._wifi_pending = (net.ssid, True, False)
+                self.keyboard_ix = KeyboardInteraction(target="password")
+                self.state = AppState.WIFI_KEYBOARD
+            else:
+                # Open OR saved-secured → connect immediately, no keyboard.
+                # A saved-secured connect sends password=None so
+                # NetworkManager reuses the stored secrets (Revision 1).
+                self._wifi_pending = (net.ssid, net.secured, False)
+                self._start_wifi_connect_worker()
+            return
+        if action == WifiListAction.EDIT:
+            # Revision 1 — hold OK on a secured network: edit/replace the
+            # password. Open the keyboard; the password Done path then
+            # connects with the freshly typed password (creating/replacing
+            # the profile).
+            net = self.wifi_list_ix.selected_network(state)
+            if net is None:
+                return
+            self._wifi_pending = (net.ssid, True, False)
+            self.keyboard_ix = KeyboardInteraction(target="password")
+            self.state = AppState.WIFI_KEYBOARD
+            return
+        if action == WifiListAction.OTHER:
+            # Hidden / typed SSID — type the name first.
+            self.keyboard_ix = KeyboardInteraction(target="ssid")
+            self.state = AppState.WIFI_KEYBOARD
+            return
+        if action == WifiListAction.RESCAN:
+            self._start_wifi_scan_worker()
+            return
+        if action == WifiListAction.FORGET:
+            net = self.wifi_list_ix.selected_network(state)
+            if net is None:
+                return
+            self._wifi_forget_target = net.ssid
+            self.state = AppState.OVERLAY_WIFI_FORGET
+            return
+        # CANCEL — back to the SETTINGS menu (cursor on Wi-Fi setup).
+        self.wifi_list_ix = None
+        self.wifi_networks = ()
+        self.time_setup_ix = TimeSetupMenuInteraction()
+        self.time_setup_ix.cursor = 2   # the Wi-Fi setup item
+        self.state = AppState.TIME_SETUP
+
+    def _dispatch_keyboard_done(self) -> None:
+        assert self.keyboard_ix is not None
+        if self.keyboard_ix.target == "ssid":
+            # `Other network…` SSID entered — always proceed to a
+            # password keyboard (hidden secured network). Hidden *open*
+            # networks are out of scope (the 8-char password minimum
+            # makes a no-password hidden join unreachable).
+            ssid = self.keyboard_ix.text
+            self._wifi_pending = (ssid, True, True)
+            self.keyboard_ix = KeyboardInteraction(target="password")
+            return
+        # Password entered → start the connect worker (it reads the
+        # password from `keyboard_ix.text` before clearing it).
+        assert self._wifi_pending is not None
+        ssid, _secured, hidden = self._wifi_pending
+        self._wifi_pending = (ssid, True, hidden)
+        self._start_wifi_connect_worker()
+
+    def _dispatch_keyboard_cancel(self) -> None:
+        self.keyboard_ix = None
+        # Revision 1 — clear the list's pressed flags so a held BACK that
+        # cancelled the keyboard does not then fire FORGET on the list it
+        # returns to (the `_back_pressed` guard race).
+        if self.wifi_list_ix is not None:
+            self.wifi_list_ix.reset_input()
+        self.state = AppState.WIFI_LIST
+
+    def _dispatch_wifi_status(self, button) -> None:
+        # OK or BACK both return to the cached list (retry-friendly).
+        if button in (ButtonId.OK, ButtonId.BACK):
+            self.wifi_status_state = None
+            if self.wifi_list_ix is not None:
+                self.wifi_list_ix.reset_input()
+            self.state = AppState.WIFI_LIST
+
+    def _dispatch_wifi_forget(self, ok: bool) -> None:
+        if ok and self._wifi_forget_target:
+            try:
+                self._nmcli.forget(self._wifi_forget_target)
+            except Exception:
+                logger.exception("wifi forget failed")
+            # Refresh the cached list so the deleted profile disappears.
+            try:
+                self.wifi_networks = tuple(self._nmcli.scan())
+            except Exception:
+                logger.exception("wifi rescan after forget failed")
+                self.wifi_networks = ()
+            self.wifi_list_ix = WifiListInteraction(self.wifi_networks)
+        self._wifi_forget_target = None
+        if self.wifi_list_ix is not None:
+            self.wifi_list_ix.reset_input()
+        self.state = AppState.WIFI_LIST
+
+    def _start_wifi_connect_worker(self) -> None:
+        """Kick off the off-thread `nmcli connect`. Modelled on the NTP
+        sync worker. The 30 s timeout lives inside `nmcli.connect`."""
+        if self._wifi_busy:
+            return
+        assert self._wifi_pending is not None
+        ssid, secured, hidden = self._wifi_pending
+        pw = (
+            self.keyboard_ix.text
+            if secured and self.keyboard_ix is not None else None
+        )
+        self._wifi_busy = True
+        self._wifi_busy_started_mono = time.monotonic()
+        self.keyboard_ix = None
+        self.wifi_status_state = WifiStatusState(phase="connecting", ssid=ssid)
+        self.state = AppState.WIFI_STATUS
+        self._notify_dirty()
+        self._wifi_worker_spawner(
+            lambda: self._run_wifi_connect(ssid, pw, hidden),
+        )
+
+    def _run_wifi_connect(self, ssid, pw, hidden) -> None:
+        """Worker body — runs OFF the UI thread (subprocess outside the
+        lock; state mutations re-acquire `self.lock`)."""
+        from .net.nmcli import ConnectResult
+        refreshed: Optional[tuple] = None
+        try:
+            result = self._nmcli.connect(ssid, pw, hidden=hidden)
+            st = (
+                self._nmcli.status()
+                if result.outcome is ConnectOutcome.SUCCESS else None
+            )
+            if result.outcome is ConnectOutcome.SUCCESS:
+                # Refresh the cached list so the active `●` dot (and the
+                # `saved` flag) follow the new association — otherwise the
+                # list keeps the stale active marker from the scan taken
+                # on entry. Reconcile against the live connection name so
+                # the dot is right regardless of any IN-USE lag in
+                # `nmcli device wifi list`.
+                try:
+                    active_name = st.connection if st else ssid
+                    refreshed = tuple(
+                        replace(
+                            n,
+                            active=(n.ssid == active_name),
+                            saved=(n.saved or n.ssid == active_name),
+                        )
+                        for n in self._nmcli.scan()
+                    )
+                except Exception:
+                    logger.exception("post-connect list refresh failed")
+        except Exception:
+            logger.exception("wifi connect worker failed")
+            result, st = ConnectResult(ConnectOutcome.FAILED, ssid), None
+        finally:
+            with self.lock:
+                self._wifi_busy = False
+                if refreshed is not None:
+                    self.wifi_networks = refreshed
+                    self.wifi_list_ix = WifiListInteraction(refreshed)
+                    self.wifi_list_ix.reset_input()
+                self.wifi_status_state = WifiStatusState(
+                    phase=(
+                        "connected" if result.outcome is ConnectOutcome.SUCCESS
+                        else "failed"
+                    ),
+                    ssid=ssid,
+                    ip=st.ip if st else None,
+                    outcome=result.outcome,
+                    detail=result.detail,
+                )
+                self.state = AppState.WIFI_STATUS
+            self._notify_dirty()
+
+    def _start_wifi_scan_worker(self) -> None:
+        """Kick off the off-thread `nmcli scan --rescan yes`."""
+        if self._wifi_busy:
+            return
+        self._wifi_busy = True
+        self._wifi_busy_started_mono = time.monotonic()
+        self._notify_dirty()
+        self._wifi_worker_spawner(self._run_wifi_scan)
+
+    def _run_wifi_scan(self) -> None:
+        networks: tuple = ()
+        try:
+            networks = tuple(self._nmcli.scan(rescan=True))
+        except Exception:
+            logger.exception("wifi scan worker failed")
+        finally:
+            with self.lock:
+                self._wifi_busy = False
+                self.wifi_networks = networks
+                self.wifi_list_ix = WifiListInteraction(networks)
+                self.state = AppState.WIFI_LIST
+            self._notify_dirty()
+
+    def _wifi_dots(self) -> Optional[int]:
+        """Animation phase for the Connecting…/Scanning… labels.
+
+        Mirrors `_compute_syncing_dots`: `None` unless busy, else cycles
+        `1 → 2 → 3` at ~2 Hz.
+        """
+        if not self._wifi_busy:
+            return None
+        delta = time.monotonic() - self._wifi_busy_started_mono
+        return int((delta * 2) % 3) + 1
 
     # -- Schedule binding & providers ------------------------------------
 

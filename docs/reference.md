@@ -470,10 +470,14 @@ Conventions:
 | Button         | Action                                                  |
 |----------------|---------------------------------------------------------|
 | ↑ / ↓          | Moves the cursor to the previous/next config.           |
-| ← / →          | No effect (reserved).                                   |
+| ←              | Opens the **SETTINGS** menu (§7.6.1).                    |
+| →              | Toggles the schedule on/off.                            |
 | OK short       | Runs the selected config (or creates, if on `+ New configuration`). |
 | OK long (≥3s)  | Opens the manage menu (§7.5). Does not apply on `+ New configuration`. |
 | ESC           | **No effect.** The main screen is the root; there is nowhere to go back to. |
+
+The main-screen footer carries a second, always-present line with the
+global shortcuts: `← settings   → sched on/off   OK+ESC shutdown`.
 
 ### 7.2 Main screen — RUNNING (engine firing)
 
@@ -679,8 +683,74 @@ effort. Decision:
   externally (via `ssh pi3`) and restarting the app — persistence is
   read-on-startup (§8).
 
-This is accepted as a conscious limitation. If a real case justifies
-it in the future, an on-screen keyboard can be added as a sub-screen.
+This is accepted as a conscious limitation. The on-screen keyboard now
+exists (added for Wi-Fi passwords — §7.6.1) and is built generically,
+but it is **not yet wired to configuration-name editing**: renaming a
+configuration still requires editing the JSON externally. Wiring the
+keyboard to name editing is a possible future enhancement.
+
+#### 7.6.1 SETTINGS menu, on-screen keyboard & Wi-Fi setup
+
+The main-screen **LEFT** button opens a flat **SETTINGS** menu (one
+level, no submenus) with three items:
+
+```
+   ┌──────────────────┐
+   │  SETTINGS        │
+   │──────────────────│
+   │ ▸ Sync Time (NTP)│   ← force an NTP sync of the device clock
+   │   Set Time (Manual)│ ← enter the time/date by hand (digit picker)
+   │   Wi-Fi setup    │   ← scan → pick → keyboard → connect
+   └──────────────────┘
+```
+
+`Sync Time (NTP)` and `Set Time (Manual)` act on the **device clock**;
+`Wi-Fi setup` opens the Wi-Fi flow. `ESC` closes the menu.
+
+**On-screen keyboard.** The first on-screen text-entry sub-screen. An
+**alphabetical grid** (not QWERTY — easier to navigate with a 6-button
+D-pad), with a **layer key** that cycles `abc → ABC → 123 → #+=` so the
+four layers together reach every printable ASCII character. Special
+keys: `␣` (space), `⌫` (backspace — delete the last character), `◉`
+(show/hide, password only — entry is masked by default so the operator
+can verify a tricky password before committing), and `✓` (Done —
+commits the text). **ESC cancels the whole entry** (it never deletes a
+character — that is `⌫`). UP/DOWN/LEFT/RIGHT move the cursor over the
+grid (LEFT/RIGHT wrap within a row); OK types the highlighted key.
+Passwords are validated as 8–63 characters (WPA2-PSK), SSIDs as 1–32
+bytes.
+
+**Wi-Fi flow.** `Wi-Fi setup` shows a **cached** scan of nearby
+networks (signal-strength glyph, a lock marker for secured networks, a
+green dot on the active one), with trailing `Other network…` (type a
+hidden SSID) and `Rescan` (force a fresh scan — slower, off-thread,
+shows a `Scanning…` animation) items.
+
+Each network row carries four distinct gestures (short vs. long is
+distinguished by firing OK/BACK on **release**):
+
+- **OK (short) — connect.** An open network, or a secured network whose
+  password is **already saved**, connects immediately reusing the
+  stored credentials (no keyboard). A secured network with **no** saved
+  profile opens the keyboard for its password first.
+- **OK (hold) — edit password.** On a secured network (saved or not),
+  opens the keyboard to type a new password; on commit it connects,
+  creating or replacing the profile. On an open network it is a no-op.
+- **ESC (short) — back** to the SETTINGS menu.
+- **ESC (hold) — forget.** Only on a **saved** network: opens a
+  confirmation overlay that deletes its NetworkManager profile.
+
+`Other network…` and `Rescan` respond to a short OK only. The connection
+runs **off the UI thread** with a **30 s timeout** and a `Connecting…`
+animation; the result screen shows either *Connected* (with the obtained
+IP) or a clear failure reason (wrong password, not in range, timed out).
+**On failure the previous connection is left untouched** — the operator
+simply retries.
+
+This is a **setup-time** action (so the box can reach NTP on a new
+network); it does not affect the capture loop's offline guarantee.
+WPA-Enterprise, captive portals, hidden *open* networks, static IP and
+a full profile manager are out of scope.
 
 ### 7.7 Hard limits
 

@@ -73,17 +73,29 @@ def _dump_artifacts(name: str, expected: Image.Image, actual: Image.Image) -> Pa
 
 class TestTimeSetupMenuConstants(unittest.TestCase):
     def test_menu_items_fixed(self):
-        self.assertEqual(MENU_ITEMS, ("Force NTP sync", "Set manually"))
+        self.assertEqual(
+            MENU_ITEMS,
+            ("Sync Time (NTP)", "Set Time (Manual)", "Wi-Fi setup"),
+        )
 
-    def test_actions_has_three_members(self):
+    def test_actions_has_four_members(self):
         members = set(TimeSetupMenuAction)
         self.assertEqual(
             members,
             {
                 TimeSetupMenuAction.FORCE_NTP_SYNC,
                 TimeSetupMenuAction.SET_MANUALLY,
+                TimeSetupMenuAction.WIFI_SETUP,
                 TimeSetupMenuAction.CANCEL,
             },
+        )
+
+    def test_ok_on_third_returns_wifi_setup(self):
+        ix = TimeSetupMenuInteraction()
+        ix.cursor = 2
+        self.assertEqual(
+            ix.on_press(ButtonId.OK),
+            TimeSetupMenuAction.WIFI_SETUP,
         )
 
 
@@ -230,6 +242,15 @@ class TestTimeSetupMenuVisualRegression(unittest.TestCase):
                 f"render — see {out}/14_main_idle_time_setup_menu_"
                 f"{{expected,actual}}.png"
             )
+
+    def test_20_settings_menu(self):
+        expected_path = MOCKUPS_DIR / "20_settings_menu.png"
+        self.assertTrue(expected_path.exists())
+        expected = Image.open(expected_path).convert("RGB")
+        actual = render_time_setup_menu(
+            _green_main_screen(), TimeSetupMenuState(cursor=0),
+        )
+        self.assertEqual(actual.tobytes(), expected.tobytes())
 
 
 if __name__ == "__main__":
