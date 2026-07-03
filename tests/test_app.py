@@ -919,6 +919,228 @@ class TestMainScreenWallClockFromTrustedClock(unittest.TestCase):
         self.assertNotEqual(img1.tobytes(), img2.tobytes())
 
 
+class TestBracketGenerator(unittest.TestCase):
+    """semiauto-bracketing §5 — EDIT ↔ BRACKET_GEN transitions and
+    draft mutation / restoration."""
+
+    # A manual config with a single, clean reference shot.
+    REF = TimelapseConfig(
+        "Totality", 5.0, (Shot(shutter=1 / 500, iso=400, aperture=None),),
+    )
+
+    def _in_edit(self):
+        app, _, _ = _make_app(self, initial_configs=(self.REF,))
+        from fp_lapse.ui import EditScreenInteraction
+        app.edit_ix = EditScreenInteraction(self.REF)
+        app.state = AppState.EDIT
+        # Move the cursor onto the generate-bracket row (index 5).
+        for _ in range(5):
+            app.edit_ix.on_press(ButtonId.DOWN)
+        return app
+
+    def test_left_right_on_generate_row_opens_generator(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        self.assertEqual(app.state, AppState.BRACKET_GEN)
+        self.assertIsNotNone(app.bracket_ix)
+        # Seeded from the draft's first shot.
+        self.assertEqual(app.bracket_ix.state.reference, self.REF.shots[0])
+
+    def test_generator_seeds_default_when_auto(self):
+        auto = TimelapseConfig("Auto", 30.0, ())
+        app, _, _ = _make_app(self, initial_configs=(auto,))
+        from fp_lapse.ui import EditScreenInteraction
+        app.edit_ix = EditScreenInteraction(auto)
+        app.state = AppState.EDIT
+        for _ in range(5):
+            app.edit_ix.on_press(ButtonId.DOWN)   # → generate row
+        app.on_press(ButtonId.RIGHT)
+        self.assertEqual(app.state, AppState.BRACKET_GEN)
+        ref = app.bracket_ix.state.reference
+        self.assertEqual(ref, Shot(shutter=1 / 30, iso=200, aperture=None))
+
+    def test_accept_writes_shots_and_returns_to_edit(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)   # open generator
+        self.assertEqual(app.state, AppState.BRACKET_GEN)
+        expected = app.bracket_ix.result().shots
+        self.assertEqual(len(expected), 5)        # default clean ladder
+        app.on_press(ButtonId.OK)      # ACCEPT
+        self.assertEqual(app.state, AppState.EDIT)
+        self.assertIsNone(app.bracket_ix)
+        # Draft now carries the generated shots (manual mode).
+        self.assertEqual(app.edit_ix.draft.shots, expected)
+        self.assertTrue(app.edit_ix.is_dirty)
+
+    def test_cancel_leaves_draft_unchanged(self):
+        app = self._in_edit()
+        original_shots = app.edit_ix.draft.shots
+        app.on_press(ButtonId.RIGHT)   # open generator
+        # Change a parameter inside the generator so result() differs.
+        app.on_press(ButtonId.DOWN)    # cursor → ref iso (or whatever)
+        app.on_press(ButtonId.BACK)    # CANCEL
+        self.assertEqual(app.state, AppState.EDIT)
+        self.assertIsNone(app.bracket_ix)
+        self.assertEqual(app.edit_ix.draft.shots, original_shots)
+        self.assertFalse(app.edit_ix.is_dirty)
+
+    def test_render_in_bracket_gen_state(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        img = app.render()
+        self.assertEqual(img.size, (320, 240))
+
+    def test_accept_then_save_round_trips_through_store(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)   # open generator
+        generated = app.bracket_ix.result().shots
+        app.on_press(ButtonId.OK)      # ACCEPT → EDIT, draft mutated
+        # Save via the normal edit→Save overlay path.
+        app.on_press(ButtonId.OK)      # EDIT OK → OVERLAY_SAVE
+        self.assertEqual(app.state, AppState.OVERLAY_SAVE)
+        app.on_press(ButtonId.OK)      # confirm save
+        self.assertEqual(app.state, AppState.MAIN)
+        saved = next(c for c in app.configs if c.name == "Totality")
+        self.assertEqual(saved.shots, generated)
+        # Round-trips through the store on reload.
+        reloaded = app.store.load()
+        names = {c.name: c for c in reloaded}
+        self.assertEqual(names["Totality"].shots, generated)
+
+
+class TestNameKeyboard(unittest.TestCase):
+    """Config-name on-screen keyboard reached from the EDIT screen."""
+
+    A_CFG = TimelapseConfig(
+        "Alpha", 10.0, (Shot(shutter=1 / 500, iso=200, aperture=None),),
+    )
+    B_CFG = TimelapseConfig(
+        "Beta", 5.0, (Shot(shutter=1 / 1000, iso=400, aperture=None),),
+    )
+
+    def _in_edit(self):
+        app, _, _ = _make_app(self, initial_configs=(self.A_CFG, self.B_CFG))
+        from fp_lapse.ui import EditScreenInteraction
+        app.edit_ix = EditScreenInteraction(self.A_CFG)
+        app.state = AppState.EDIT
+        # Cursor already on the name row (index 0).
+        return app
+
+    def _type_name(self, app, name: str) -> None:
+        from fp_lapse.ui.keyboard import keyboard_rows, KeyKind, _LAYER_ORDER
+
+        def goto(r, c):
+            while app.keyboard_ix.state.cursor_row > 0:
+                app.on_press(ButtonId.UP)
+            while app.keyboard_ix.state.cursor_row < r:
+                app.on_press(ButtonId.DOWN)
+            for _ in range(12):
+                if app.keyboard_ix.state.cursor_col == 0:
+                    break
+                app.on_press(ButtonId.LEFT)
+            for _ in range(c):
+                app.on_press(ButtonId.RIGHT)
+
+        def find(ch):
+            for layer in _LAYER_ORDER:
+                for r, row in enumerate(keyboard_rows("config_name", layer)):
+                    for c, key in enumerate(row):
+                        if key.kind in (KeyKind.CHAR, KeyKind.SPACE) \
+                                and key.value == ch:
+                            return layer, r, c
+            raise AssertionError(ch)
+
+        def press_layer():
+            rows = keyboard_rows("config_name", app.keyboard_ix.state.layer)
+            col = next(
+                i for i, k in enumerate(rows[-1]) if k.kind == KeyKind.LAYER
+            )
+            goto(len(rows) - 1, col)
+            app.on_press(ButtonId.OK)
+
+        # Clear the seeded text via backspace.
+        while app.keyboard_ix.text:
+            rows = keyboard_rows("config_name", app.keyboard_ix.state.layer)
+            col = next(
+                i for i, k in enumerate(rows[-1]) if k.kind == KeyKind.BACKSPACE
+            )
+            goto(len(rows) - 1, col)
+            app.on_press(ButtonId.OK)
+        for ch in name:
+            layer, r, c = find(ch)
+            guard = 0
+            while app.keyboard_ix.state.layer != layer and guard < 8:
+                press_layer()
+                guard += 1
+            goto(r, c)
+            app.on_press(ButtonId.OK)
+
+    def _press_done(self, app):
+        from fp_lapse.ui.keyboard import keyboard_rows, KeyKind
+        rows = keyboard_rows("config_name", app.keyboard_ix.state.layer)
+        col = next(i for i, k in enumerate(rows[-1]) if k.kind == KeyKind.DONE)
+        while app.keyboard_ix.state.cursor_row > 0:
+            app.on_press(ButtonId.UP)
+        while app.keyboard_ix.state.cursor_row < len(rows) - 1:
+            app.on_press(ButtonId.DOWN)
+        for _ in range(12):
+            if app.keyboard_ix.state.cursor_col == 0:
+                break
+            app.on_press(ButtonId.LEFT)
+        for _ in range(col):
+            app.on_press(ButtonId.RIGHT)
+        app.on_press(ButtonId.OK)
+
+    def test_right_on_name_opens_keyboard(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        self.assertEqual(app.state, AppState.NAME_KEYBOARD)
+        self.assertIsNotNone(app.keyboard_ix)
+        self.assertEqual(app.keyboard_ix.target, "config_name")
+        self.assertEqual(app.keyboard_ix.text, "Alpha")
+
+    def test_taken_names_excludes_own_name(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        # "Beta" is taken (another config); "Alpha" (own) is allowed.
+        self.assertIn("Beta", app.keyboard_ix._taken_names)
+        self.assertNotIn("Alpha", app.keyboard_ix._taken_names)
+
+    def test_done_commits_new_name(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        self._type_name(app, "Gamma")
+        self._press_done(app)
+        self.assertEqual(app.state, AppState.EDIT)
+        self.assertIsNone(app.keyboard_ix)
+        self.assertEqual(app.edit_ix.draft.name, "Gamma")
+
+    def test_cancel_leaves_name_unchanged(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        self._type_name(app, "Gamma")
+        app.on_press(ButtonId.BACK)   # CANCEL
+        self.assertEqual(app.state, AppState.EDIT)
+        self.assertIsNone(app.keyboard_ix)
+        self.assertEqual(app.edit_ix.draft.name, "Alpha")
+
+    def test_duplicate_name_stays_in_keyboard(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        self._type_name(app, "Beta")   # collides with the other config
+        self._press_done(app)
+        self.assertEqual(app.state, AppState.NAME_KEYBOARD)
+        self.assertIsNotNone(app.keyboard_ix)
+        self.assertEqual(app.keyboard_ix.state.error, "Name in use")
+        self.assertEqual(app.edit_ix.draft.name, "Alpha")
+
+    def test_render_in_name_keyboard_state(self):
+        app = self._in_edit()
+        app.on_press(ButtonId.RIGHT)
+        img = app.render()
+        self.assertEqual(img.size, (320, 240))
+
+
 class TestNamingHelpers(unittest.TestCase):
     def test_new_config_skips_existing_names(self):
         app, _, _ = _make_app(self, initial_configs=(

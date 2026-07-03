@@ -72,37 +72,44 @@ class TestEditableFields(unittest.TestCase):
         self.assertEqual(f[1], ("interval", "5 s"))
         self.assertEqual(f[2], ("shots", "5"))
 
-    def test_shot_fields_in_order(self):
-        # prd2.md §6.2: schedule pair (start at 3, end at 4) lives
-        # between `shots` and the per-shot rows. Shot 1 shutter is now
-        # at index 5 (was 3).
+    def test_generate_bracket_row_after_end(self):
+        # semiauto-bracketing §4: the generator entry row sits at index 5,
+        # after the schedule pair (3=start, 4=end) and before the per-shot
+        # rows. Its value cell is a hint, not a cyclable value.
         f = editable_fields(TOTALITY)
-        self.assertEqual(f[5], ("#1 shutter", "1/500"))
-        self.assertEqual(f[6], ("#1 iso", "400"))
-        self.assertEqual(f[7], ("#1 aperture", "—"))
+        self.assertEqual(f[5], ("generate bracket", "→ open"))
+
+    def test_shot_fields_in_order(self):
+        # semiauto-bracketing §4: the generate-bracket row at index 5
+        # pushes the per-shot rows down by one. Shot 1 shutter is now at
+        # index 6 (was 5).
+        f = editable_fields(TOTALITY)
+        self.assertEqual(f[6], ("#1 shutter", "1/500"))
+        self.assertEqual(f[7], ("#1 iso", "400"))
+        self.assertEqual(f[8], ("#1 aperture", "—"))
         # Shot 5: shutter=2s, iso=1600, aperture=None.
-        self.assertEqual(f[17], ("#5 shutter", "2 s"))
-        self.assertEqual(f[18], ("#5 iso", "1600"))
-        self.assertEqual(f[19], ("#5 aperture", "—"))
+        self.assertEqual(f[18], ("#5 shutter", "2 s"))
+        self.assertEqual(f[19], ("#5 iso", "1600"))
+        self.assertEqual(f[20], ("#5 aperture", "—"))
 
     def test_total_count(self):
-        # 5 header fields (name, interval, shots, start, end) + 3 per
-        # shot × 5 shots = 20.
-        self.assertEqual(len(editable_fields(TOTALITY)), 20)
+        # 6 header fields (name, interval, shots, start, end, generate
+        # bracket) + 3 per shot × 5 shots = 21.
+        self.assertEqual(len(editable_fields(TOTALITY)), 21)
 
     def test_null_aperture_renders_dash(self):
         cfg = TimelapseConfig(
             "X", 10.0, (Shot(shutter=1 / 500, iso=200, aperture=None),)
         )
         f = editable_fields(cfg)
-        self.assertEqual(f[7], ("#1 aperture", "—"))
+        self.assertEqual(f[8], ("#1 aperture", "—"))
 
     def test_concrete_aperture_renders_plain_number(self):
         cfg = TimelapseConfig(
             "X", 10.0, (Shot(shutter=1 / 500, iso=200, aperture=5.6),)
         )
         f = editable_fields(cfg)
-        self.assertEqual(f[7], ("#1 aperture", "5.6"))
+        self.assertEqual(f[8], ("#1 aperture", "5.6"))
 
 
 class TestEditScreenSmoke(unittest.TestCase):
@@ -197,10 +204,12 @@ class TestStartEndFields(unittest.TestCase):
     def test_auto_mode_still_has_start_end(self):
         cfg = TimelapseConfig("Auto", 30.0, ())
         f = editable_fields(cfg)
-        # 0=name, 1=interval, 2=shots, 3=start, 4=end, no shot rows.
-        self.assertEqual(len(f), 5)
+        # 0=name, 1=interval, 2=shots, 3=start, 4=end, 5=generate, no
+        # shot rows. The generate-bracket row is always present.
+        self.assertEqual(len(f), 6)
         self.assertEqual(f[3][0], "start")
         self.assertEqual(f[4][0], "end")
+        self.assertEqual(f[5], ("generate bracket", "→ open"))
 
 
 class TestStartEndInteraction(unittest.TestCase):
@@ -266,6 +275,65 @@ class TestStartEndInteraction(unittest.TestCase):
         ix = self._at_start()
         ix.field_cursor = 0
         self.assertEqual(ix.on_press(ButtonId.OK), EditAction.SAVE)
+
+
+class TestGenerateBracketRowInteraction(unittest.TestCase):
+    """semiauto-bracketing §4 — LEFT/RIGHT on the generate-bracket row
+    open the generator; OK stays = SAVE."""
+
+    def _ix(self) -> EditScreenInteraction:
+        cfg = TimelapseConfig(
+            "X", 10.0, (Shot(shutter=1 / 500, iso=200, aperture=None),),
+        )
+        ix = EditScreenInteraction(cfg)
+        ix.field_cursor = 5   # the generate-bracket row
+        return ix
+
+    def test_right_opens_generator(self):
+        ix = self._ix()
+        self.assertEqual(ix.on_press(ButtonId.RIGHT), EditAction.OPEN_GENERATOR)
+        # The draft is untouched — the generator does any mutation later.
+        self.assertEqual(len(ix.draft.shots), 1)
+        self.assertFalse(ix.is_dirty)
+
+    def test_left_also_opens_generator(self):
+        ix = self._ix()
+        self.assertEqual(ix.on_press(ButtonId.LEFT), EditAction.OPEN_GENERATOR)
+
+    def test_ok_on_generate_row_returns_save(self):
+        ix = self._ix()
+        self.assertEqual(ix.on_press(ButtonId.OK), EditAction.SAVE)
+
+    def test_generate_row_present_in_auto_mode(self):
+        cfg = TimelapseConfig("Auto", 30.0, ())
+        ix = EditScreenInteraction(cfg)
+        ix.field_cursor = 5
+        self.assertEqual(ix.on_press(ButtonId.RIGHT), EditAction.OPEN_GENERATOR)
+
+
+class TestNameRowInteraction(unittest.TestCase):
+    """The `name` row's LEFT/RIGHT open the on-screen keyboard."""
+
+    def _ix(self) -> EditScreenInteraction:
+        cfg = TimelapseConfig(
+            "X", 10.0, (Shot(shutter=1 / 500, iso=200, aperture=None),),
+        )
+        ix = EditScreenInteraction(cfg)
+        ix.field_cursor = 0   # the name row
+        return ix
+
+    def test_right_opens_name_keyboard(self):
+        ix = self._ix()
+        self.assertEqual(
+            ix.on_press(ButtonId.RIGHT), EditAction.OPEN_NAME_KEYBOARD,
+        )
+        self.assertFalse(ix.is_dirty)
+
+    def test_left_opens_name_keyboard(self):
+        ix = self._ix()
+        self.assertEqual(
+            ix.on_press(ButtonId.LEFT), EditAction.OPEN_NAME_KEYBOARD,
+        )
 
 
 class TestEditScreenWithScheduleVisualRegression(unittest.TestCase):

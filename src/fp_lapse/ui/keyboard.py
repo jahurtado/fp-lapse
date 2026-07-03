@@ -7,11 +7,12 @@ returns a `KeyboardAction` (or `None` while editing).
 
 Layout: an alphabetical **ragged grid** — three char rows of 10
 single-width keys + one bottom row of wide special keys (5 for the
-`password` target, 4 for `ssid`). A LAYER key cycles
+`password` target, 4 for `ssid`/`config_name`). A LAYER key cycles
 `abc → ABC → 123 → #+=`; together the four layers reach every printable
 ASCII char (0x20–0x7E). The keyboard carries a `target` discriminator
-(`"ssid"` | `"password"`) the App reads on commit; it is built
-generically but is wired only to the Wi-Fi fields in this feature.
+(`"ssid"` | `"password"` | `"config_name"`) the App reads on commit; it
+is built generically and wired to the Wi-Fi fields and to the timelapse
+configuration name (semiauto-bracketing addendum).
 
 D-pad semantics: LEFT/RIGHT wrap within a row; UP/DOWN clamp at the
 top/bottom and preserve horizontal position by proportion across the
@@ -28,6 +29,7 @@ from typing import List, Optional, Tuple
 from PIL import Image
 
 from ..buttons.iface import ButtonId
+from ..configs import MAX_NAME_LENGTH
 from ..display.iface import HEIGHT, WIDTH
 from . import fonts, theme, widgets
 
@@ -39,6 +41,10 @@ PASSWORD_MIN: int = 8
 PASSWORD_MAX: int = 63
 SSID_MIN: int = 1
 SSID_MAX: int = 32   # bytes (UTF-8)
+# Config-name cap mirrors `configs.MAX_NAME_LENGTH` (= 20). Names are
+# 1–20 chars (semiauto-bracketing addendum).
+NAME_MIN: int = 1
+NAME_MAX: int = MAX_NAME_LENGTH
 
 
 # ----------------------------------------------------------------------
@@ -127,7 +133,7 @@ def keyboard_rows(target: str, layer: str) -> Tuple[Tuple[Key, ...], ...]:
 
 @dataclass(frozen=True)
 class KeyboardState:
-    target: str                  # "ssid" | "password"
+    target: str                  # "ssid" | "password" | "config_name"
     text: str                    # current entered text
     layer: str                   # "abc" | "ABC" | "123" | "#+="
     masked: bool                 # password show/hide (ignored for ssid)
@@ -149,11 +155,18 @@ def _remap_col(col: int, cur_len: int, new_len: int) -> int:
 class KeyboardInteraction:
     """Cursor navigation + button-to-action translation for the keyboard."""
 
-    def __init__(self, *, target: str, initial: str = "") -> None:
-        if target not in ("ssid", "password"):
+    def __init__(
+        self,
+        *,
+        target: str,
+        initial: str = "",
+        taken_names: frozenset[str] = frozenset(),
+    ) -> None:
+        if target not in ("ssid", "password", "config_name"):
             raise ValueError(f"unknown keyboard target: {target!r}")
         self._target = target
         self._text = initial
+        self._taken_names = taken_names
         self._layer = "abc"
         self._masked = target == "password"
         self._cursor_row = 0
@@ -240,14 +253,18 @@ class KeyboardInteraction:
             self._text += ch
             self._error = None
         else:
-            self._error = (
-                f"Max {PASSWORD_MAX} chars" if self._target == "password"
-                else f"Max {SSID_MAX} chars"
-            )
+            if self._target == "password":
+                self._error = f"Max {PASSWORD_MAX} chars"
+            elif self._target == "config_name":
+                self._error = f"Max {NAME_MAX} chars"
+            else:
+                self._error = f"Max {SSID_MAX} chars"
 
     def _fits(self, candidate: str) -> bool:
         if self._target == "password":
             return len(candidate) <= PASSWORD_MAX
+        if self._target == "config_name":
+            return len(candidate) <= NAME_MAX
         return len(candidate.encode("utf-8")) <= SSID_MAX
 
     def _try_done(self) -> Optional[KeyboardAction]:
@@ -257,6 +274,15 @@ class KeyboardInteraction:
                 return KeyboardAction.DONE
             self._error = f"{PASSWORD_MIN}–{PASSWORD_MAX} chars"
             return None
+        if self._target == "config_name":
+            if not NAME_MIN <= len(self._text) <= NAME_MAX:
+                self._error = f"{NAME_MIN}–{NAME_MAX} chars"
+                return None
+            if self._text in self._taken_names:
+                self._error = "Name in use"
+                return None
+            self._error = None
+            return KeyboardAction.DONE
         nbytes = len(self._text.encode("utf-8"))
         if SSID_MIN <= nbytes <= SSID_MAX:
             self._error = None

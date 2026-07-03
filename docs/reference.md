@@ -140,12 +140,14 @@ Rules:
     `30 s`.
   - Otherwise: `0.NNN s`. E.g. `0.333` → `0.333 s`.
 
-- `iso`: integer in `[100, 25600]`. The UI cycles only through full
-  native stops: `{100, 200, 400, 800, 1600, 3200, 6400, 12800,
-  25600}`. The fp supports 1/3 EV intermediates and an extended
-  range outside `[100, 25600]`; the JSON validator is the hard
-  boundary, so a hand-edit can use intermediate values inside the
-  native range.
+- `iso`: integer in `[100, 25600]`. The UI cycles through the fp's
+  native 1/3-EV scale within that range: `{100, 125, 160, 200, 250,
+  320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000,
+  5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600}`. These match
+  the camera's ISO table exactly, so every offered value sets without
+  snapping. The fp also has an extended range outside `[100, 25600]`;
+  the JSON validator is the hard boundary, so a hand-edit can use any
+  value inside the native range.
 
 - `aperture`: number (f-stop, e.g. `5.6`) **or** `null`. `null`
   means "manual lens, the camera doesn't drive aperture
@@ -549,11 +551,13 @@ Case B — cursor sits on **another** config (not the running one):
 │   interval                5 s          │
 │   shots                   5            │
 │ ─────────────────────────────────────  │
-│▌ #1 shutter            1/500           │ ← cursor (active field)
+│   start          2026-08-12 11:33:23   │
+│   end            2026-08-12 11:36:09   │
+│ ─────────────────────────────────────  │
+│▌ generate bracket       → open         │ ← LEFT/RIGHT opens generator
+│  #1 shutter            1/500           │
 │  #1 iso                 400            │
 │  #1 aperture             —             │
-│  #2 shutter            1/125           │
-│  #2 iso                 400            │
 │  …                                     │
 ├────────────────────────────────────────┤
 │ ↑↓ field   ←→ value   OK save   ESC   │
@@ -578,7 +582,7 @@ In auto mode (`shots == []`) the per-shot rows collapse:
 - `←` / `→` on the active field: cycles the value (previous / next of
   the discrete list). "Scrubbing" convention — left decreases, right
   increases.
-  - `name`: no effect (read-only from the UI — §7.6).
+  - `name`: `←/→` opens the on-screen keyboard (§7.6).
   - `interval`: cycles through the discrete list
     `{1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600}` seconds.
   - `shots`: cycles through `{1 (auto), 1, 2, 3, 4, 5, 6, 7, 8, 9}`
@@ -591,11 +595,18 @@ In auto mode (`shots == []`) the per-shot rows collapse:
   - `#N shutter`: cycles through the fp's valid shutters
     `{"1/8000", "1/6400", …, 30}` (no `null` / no `"auto"` — those
     sentinels were removed from the data model).
-  - `#N iso`: cycles through `{100, 200, 400, …, 25600}` (full stops;
-    see §3.2).
+  - `#N iso`: cycles through the native 1/3-EV scale `{100, 125, 160,
+    …, 25600}` (see §3.2).
   - `#N aperture`: cycles through `{null, 1.4, 1.6, 1.8, …, 22}` —
     `null` (the wrap-around slot) means "manual lens, no electronic
     aperture control".
+  - `generate bracket`: this row is **not** a cyclable value — its cell
+    shows the hint `→ open`. Either `←` or `→` opens the **bracket
+    generator** sub-screen (§7.9), mirroring how `←`/`→` on `start` /
+    `end` open the datetime picker. `OK` still means SAVE here, keeping
+    the "OK = SAVE everywhere" rule intact. The row sits on the boundary
+    of the shots group ("build the shots below"). It is present in both
+    auto and manual mode.
 - `OK`: opens the Save confirmation overlay (§7.4). Saving is an
   irreversible operation, so the spec prioritizes safety over speed.
   The confirmation fires even when there are no apparent changes (no
@@ -665,29 +676,35 @@ affect the engine in either case.
 `↑` / `↓` navigate, `OK` selects, `ESC` closes the menu without
 action.
 
-### 7.6 Configuration names (no on-screen keyboard)
+### 7.6 Configuration names
 
-Editing text with 6 buttons is tedious enough to not be worth the
-effort. Decision:
+The `name` field is editable on-device. On the edit screen (§7.3),
+`←/→` on the `name` field opens the on-screen keyboard (§7.6.1) seeded
+with the current name. `✓` commits after inline validation; `BACK`/`ESC`
+cancels and leaves the name unchanged.
 
-- The `name` field is shown in the edit screen (§7.3) **read-only**:
-  visible for identification, but `←/→` on it does nothing.
+Validation on `✓`:
+
+- **non-empty** and **≤ `MAX_NAME_LENGTH` (20) chars** — otherwise the
+  keyboard shows `1–20 chars` and stays open.
+- **unique across configs** — a name already used by another config
+  shows `Name in use` and stays open. Re-confirming the config's own
+  current name unchanged is allowed.
+
+Auto-generated names still apply where no text entry happens:
+
 - **`+ New configuration`** creates the entry with an auto-generated
   name: `Config 1`, `Config 2`, … (the next free integer that doesn't
-  collide with an existing name).
+  collide with an existing name). It can then be renamed via the
+  keyboard.
 - **Duplicate** (§7.5) generates `<original> (copy)`; if that already
   exists, `<original> (copy 2)`, etc. If the concatenation exceeds
   the 20-char hard limit, the original is truncated to make room for
   the suffix.
-- Renaming a configuration requires editing `runtime/configs.json`
-  externally (via `ssh pi3`) and restarting the app — persistence is
-  read-on-startup (§8).
 
-This is accepted as a conscious limitation. The on-screen keyboard now
-exists (added for Wi-Fi passwords — §7.6.1) and is built generically,
-but it is **not yet wired to configuration-name editing**: renaming a
-configuration still requires editing the JSON externally. Wiring the
-keyboard to name editing is a possible future enhancement.
+Editing `runtime/configs.json` externally (via `ssh pi3`, then
+restarting the app — persistence is read-on-startup, §8) also still
+works for renaming.
 
 #### 7.6.1 SETTINGS menu, on-screen keyboard & Wi-Fi setup
 
@@ -768,9 +785,10 @@ a full profile manager are out of scope.
 - **9 shots in a bracket**: in the edit screen, `→` on the `bracket
   size` field does nothing (no overlay; the limit is implicit in the
   value not increasing).
-- **20 characters in `name`**: not reachable from the UI (no
-  on-screen keyboard — §7.6). The `(copy)` suffix from `Duplicate` is
-  guaranteed within the limit by truncating the original as needed.
+- **20 characters in `name`**: the on-screen keyboard (§7.6) rejects a
+  21st char (inline `Max 20 chars`) and refuses to commit an over-long
+  name. The `(copy)` suffix from `Duplicate` is guaranteed within the
+  limit by truncating the original as needed.
 
 If the external JSON violates these limits, the first N are loaded
 and a WARNING is logged — startup is not blocked.
@@ -851,6 +869,102 @@ mistakes.
   EPERM and the same Phase-1-stuck behavior applies. (In practice
   the unit always runs as root — §execution model in CLAUDE.md.)
 
+### 7.9 Bracket generator screen
+
+A secondary screen reached from the edit screen's `generate bracket`
+row (§7.3, opened with `←`/`→`). It **generates** the `shots` tuple of a
+config from a handful of parameters instead of hand-entering each shot —
+the headline use case being an evenly-stepped HDR corona ladder for the
+eclipse. It is a **configuration-time generator, not metering**: fully
+deterministic from a reference exposure, no live light measurement, and
+it does not touch the capture loop or the data model. On accept the
+generated shots are written into the edit draft as ordinary manual data
+(still hand-editable, persisted through the normal edit→Save path); the
+bracket parameters themselves are **not** stored.
+
+```
+┌────────────────────────────────────────┐
+│ GEN BRACKET · Totality                 │
+├────────────────────────────────────────┤
+│   ref shutter            1/500         │
+│   ref iso                 400          │
+│   ref aperture           f/8           │
+│   direction            darkest         │
+│   EV step               1 EV           │
+│   shots                   5            │
+│   iso 1                  400           │
+│▌  iso 2                  off           │ ← cursor
+│ ─────────────────────────────────────  │
+│ Preview (5/5):                         │
+│  1/30·400  1/60·400  1/125·400         │
+│  1/250·400  1/500·400                  │
+├────────────────────────────────────────┤
+│ ↑↓ field  ←→ value  OK make  ESC      │
+└────────────────────────────────────────┘
+```
+
+**Parameters (8 fields, cycled like the edit screen):**
+
+- `ref shutter` / `ref iso` / `ref aperture`: a full reference `Shot`
+  (from `SHUTTER_VALUES` / `ISO_VALUES` / `APERTURE_VALUES`) that
+  "exposes for the light" and is captured **verbatim** at one end of the
+  ladder. It need not be the time-optimal exposure. **Aperture is never
+  a bracketing axis**: the reference aperture is *held constant* and
+  copied verbatim onto every generated shot (it does not enter the
+  exposure math — only shutter and ISO vary between rungs). On the fp's
+  common manual / adapted glass this is `f/—` (`null`); set a concrete
+  f-number only for a lens whose aperture the camera actually drives.
+- `direction`: `brightest` / `darkest` — whether the reference is the
+  most- or least-exposed shot, so the ladder extends to the opposite
+  side.
+- `EV step`: the EV between adjacent rungs, from `{1, 2, 2.5, 3, 3.5, 4}`
+  EV. The integer steps land exactly on the 1/3-EV shutter grid; the
+  half steps 2.5 / 3.5 EV fall between grid stops and snap to the
+  nearest (bounded error ±1/6 EV, acceptable for an HDR ladder).
+- `shots`: the requested rung count `N`, `1..9` (no auto sentinel).
+- `iso 1` (mandatory) and `iso 2` (with an `off` wrap-around slot): the
+  ISOs the generator may pick from for the non-reference rungs.
+
+**Navigation:** `↑`/`↓` move the field cursor (clamped at the ends);
+`←`/`→` cycle the focused field; the **live preview** below recomputes on
+every change. `OK` (= "make") materialises the ladder into the edit draft
+and returns to the edit screen; `ESC` discards and returns with the draft
+unchanged.
+
+**Preview block:** `Preview (S/N):` where `S` is the surviving count and
+`N` the requested; when rungs drop, ` D dropped (out of range)` is
+appended. Below it the surviving shots render as compact `shutter·iso`
+tokens, ordered **brightest → darkest**.
+
+**Generation algorithm** (pure, in `src/fp_lapse/bracket.py`; the shutter
+grid is injected so the module never imports from the UI layer):
+
+- Relative light of an exposure is `light = shutter · iso` (aperture is
+  held constant across the ladder, so it factors out). Let `L_R` be the
+  reference's light.
+- Target light per rung `k` (`k = 0` is the reference end): for a
+  **brightest** reference `target_k = L_R / 2^(EV_step·k)` (rungs get
+  darker); for a **darkest** reference `target_k = L_R · 2^(EV_step·k)`
+  (rungs get brighter).
+- **Rung 0** is the reference emitted **verbatim** (its own
+  shutter/iso/aperture), never re-optimised — so at least one shot always
+  survives.
+- **Rungs k ≥ 1** choose `(shutter, iso)` from the eligible ISO set
+  `{iso1, iso2?}`: for each ISO `g`, `required = target_k / g`; if it
+  lies in the grid's `[min, max]` range it snaps to the **nearest** grid
+  shutter (ties prefer the shorter). Among the feasible candidates the
+  one with the **shortest** snapped shutter wins (minimise exposure
+  time); ties prefer the **lower** ISO (less noise). If no eligible ISO
+  is feasible, the rung is **dropped**.
+- The output is always ordered **brightest → darkest** (descending
+  light), regardless of which end the reference anchored, and is bounded
+  by `MAX_SHOTS_PER_BRACKET` (9). The materialised shots always satisfy
+  `validate_strict` (grid shutters in range, ISOs in `[ISO_MIN,
+  ISO_MAX]`). See `docs/features/semiauto-bracketing/` for the full spec.
+
+The data model (§3.2) is **unchanged**: the generator only produces an
+ordinary `shots` tuple the existing engine fires.
+
 ---
 
 ## 8. Persistence
@@ -915,9 +1029,10 @@ When launching the app:
   whatever it is; the grid uses a monotonic clock.
 - **No** live observation of the JSON. Editing it by hand requires
   restarting the app to take effect.
-- **No** text editing on the Pi (no on-screen keyboard). Names are
-  auto-generated when creating/duplicating; renaming requires editing
-  the JSON externally (§7.6).
+- Text entry on the Pi uses the 6-button on-screen keyboard (§7.6.1):
+  Wi-Fi SSID/password and the configuration `name` (§7.6). Names are
+  also auto-generated when creating/duplicating; renaming by editing
+  the JSON externally still works too.
 - **No** fp battery level is shown. `sigma-ptpy` doesn't expose that
   data; the field is kept in the interface for the future but the
   real adapter always returns `None`.

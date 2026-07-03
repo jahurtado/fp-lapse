@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, List, Sequence
 
+from ..configs import MAX_SHOTS_PER_BRACKET
+
 # Spec §7.3: discrete interval values, in seconds.
 INTERVALS_S: List[float] = [
     1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600,
@@ -33,14 +35,18 @@ SHUTTER_VALUES: List[Any] = [
     10.0, 13.0, 15.0, 20.0, 25.0, 30.0,
 ]
 
-# ISO values exposed by the UI cycling: full native stops only
-# (`{100, 200, 400, …, 25600}`). The fp supports 1/3 EV intermediates
-# and extended ranges (6..50 below, 51200..102400 above), but as a UX
-# decision only the round values are exposed. The JSON validator
-# (`ISO_MIN..ISO_MAX` in `configs.py`) is the hard boundary, so a
-# manual editor of the JSON can still use intermediate values.
+# ISO values exposed by the UI cycling: the Sigma fp's native 1/3-EV
+# scale from 100 to 25600. These match the `ISOSpeedConverter` APEX
+# table in sigma-ptpy exactly, so every offered value round-trips to the
+# camera without being snapped to a neighbour (e.g. 640 stays 640, not
+# rounded to 800). The fp also has extended ranges (6..50 below,
+# 51200..102400 above); those stay out by design — the UI covers the
+# usable photographic range. The JSON validator (`ISO_MIN..ISO_MAX` in
+# `configs.py`) is the hard boundary for hand-edited config files.
 ISO_VALUES: List[Any] = [
-    100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600,
+    100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
+    2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000,
+    20000, 25600,
 ]
 
 # Standard apertures f/1.4 to f/22 in 1/3 stops. `None` means "manual
@@ -65,6 +71,51 @@ def format_shots(value: Any) -> str:
     if value == SHOTS_AUTO:
         return "1 (auto)"
     return str(value)
+
+
+# ----------------------------------------------------------------------
+# Semiautomatic bracketing generator value lists (prd
+# docs/features/semiauto-bracketing).
+# ----------------------------------------------------------------------
+
+# EV between adjacent bracket rungs: full stops plus half stops in the
+# upper range. Stored as floats (2.5 / 3.5 are non-integer thirds, so
+# they fall between grid stops and snap to the nearest third).
+EV_STEP_VALUES: List[float] = [1, 2, 2.5, 3, 3.5, 4]
+
+# Requested rung count for the generator. No "auto" sentinel — unlike
+# SHOTS_VALUES, the generator never produces auto mode.
+BRACKET_N_VALUES: List[int] = list(range(1, MAX_SHOTS_PER_BRACKET + 1))  # [1..9]
+
+# Which end the reference exposure anchors.
+DIRECTION_BRIGHTEST = "brightest"
+DIRECTION_DARKEST = "darkest"
+DIRECTION_VALUES: List[Any] = [DIRECTION_BRIGHTEST, DIRECTION_DARKEST]
+
+# Second eligible ISO, with an "off" sentinel in the wrap-around slot
+# (mirrors APERTURE_VALUES' leading None).
+ISO2_OFF = "off"
+ISO2_VALUES: List[Any] = [ISO2_OFF, *ISO_VALUES]
+
+
+def format_ev_step(v: float) -> str:
+    """Display an `EV_STEP_VALUES` entry: `1 EV`, `2.5 EV` (no `.0`)."""
+    f = float(v)
+    if f == int(f):
+        return f"{int(f)} EV"
+    return f"{f:g} EV"
+
+
+def format_direction(v: Any) -> str:
+    """Display a `DIRECTION_VALUES` entry verbatim (`brightest`/`darkest`)."""
+    return str(v)
+
+
+def format_iso2(v: Any) -> str:
+    """Display an `ISO2_VALUES` entry: the `off` sentinel or the ISO."""
+    if v == ISO2_OFF:
+        return ISO2_OFF
+    return str(v)
 
 
 def cycle_in_list(value: Any, values: Sequence[Any], delta: int) -> Any:

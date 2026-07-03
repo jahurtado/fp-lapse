@@ -55,6 +55,8 @@ from .schedule.moment import ScheduledMoment
 from .shutdown import do_shutdown
 from .net.nmcli import ConnectOutcome
 from .ui import (
+    BracketGenAction,
+    BracketGenInteraction,
     DateTimePickerInteraction,
     EditAction,
     EditScreen,
@@ -84,6 +86,7 @@ from .ui import (
     render_datetime_picker,
     render_keyboard,
     render_manage_menu,
+    render_bracket_gen,
     render_overlay,
     render_powering_off,
     render_time_setup_menu,
@@ -97,6 +100,11 @@ from .ui import (
 )
 
 logger = logging.getLogger(__name__)
+
+# semiauto-bracketing §5: reference seed when the edit draft is in auto
+# mode (no first shot to anchor the generator). Matches
+# `EditScreenInteraction._restore_shots`'s default 1-shot exposure.
+_DEFAULT_BRACKET_REF = Shot(shutter=1 / 30, iso=200, aperture=None)
 
 
 def _default_timedatectl_runner(cmd: list[str]) -> None:
@@ -180,6 +188,10 @@ class AppState(str, Enum):
     # prd2.md §6 — schedule UI states.
     TIME_SETUP = "time_setup"             # LEFT-press menu over main screen
     PICKER = "picker"                     # digit picker (from edit or time setup)
+    # semiauto-bracketing §5 — generator sub-screen reached from EDIT.
+    BRACKET_GEN = "bracket_gen"
+    # On-screen keyboard for the timelapse config name (reached from EDIT).
+    NAME_KEYBOARD = "name_keyboard"
     # §7.8 — safe shutdown via BACK+OK chord.
     OVERLAY_POWEROFF = "overlay_poweroff"  # "Power off?" confirmation
     SHUTTING_DOWN = "shutting_down"        # phase 1 after confirm
@@ -259,6 +271,9 @@ class App:
         # Overlay interactions — exist only while their state is active.
         self.time_setup_ix: Optional[TimeSetupMenuInteraction] = None
         self.picker_ix: Optional[DateTimePickerInteraction] = None
+        # semiauto-bracketing §5 — generator sub-screen interaction;
+        # exists only while `state == BRACKET_GEN`.
+        self.bracket_ix: Optional[BracketGenInteraction] = None
         # Force-NTP-sync feedback (addendum A1). True while the daemon
         # worker spawned by `_dispatch_time_setup(FORCE_NTP_SYNC)` is
         # running. Drives the TIME SETUP menu's animated "Syncing..."
@@ -369,6 +384,22 @@ class App:
                     self._dispatch_picker_save()
                 elif r is PickerAction.CANCEL:
                     self._dispatch_picker_cancel()
+            elif self.state == AppState.BRACKET_GEN:
+                if self.bracket_ix is None:
+                    return
+                r = self.bracket_ix.on_press(button)
+                if r is BracketGenAction.ACCEPT:
+                    self._dispatch_bracket_accept()
+                elif r is BracketGenAction.CANCEL:
+                    self._dispatch_bracket_cancel()
+            elif self.state == AppState.NAME_KEYBOARD:
+                if self.keyboard_ix is None:
+                    return
+                r = self.keyboard_ix.on_press(button)
+                if r is KeyboardAction.DONE:
+                    self._dispatch_name_keyboard_done()
+                elif r is KeyboardAction.CANCEL:
+                    self._dispatch_name_keyboard_cancel()
             elif self.state == AppState.WIFI_LIST:
                 if self.wifi_list_ix is None:
                     return
@@ -513,6 +544,8 @@ class App:
                 return render_datetime_picker(
                     base, self.picker_ix.state, title=title,
                 )
+            if self.state == AppState.BRACKET_GEN and self.bracket_ix is not None:
+                return render_bracket_gen(self.bracket_ix.state)
             if self.state == AppState.OVERLAY_DELETE:
                 # Overlay sits on top of the manage menu the user came from.
                 manage_img = render_manage_menu(
@@ -548,9 +581,12 @@ class App:
                     ),
                     dots=self._wifi_dots(),
                 )
-            if self.state == AppState.WIFI_KEYBOARD and self.keyboard_ix is not None:
+            if self.state in (AppState.WIFI_KEYBOARD, AppState.NAME_KEYBOARD) \
+                    and self.keyboard_ix is not None:
+                t = self.keyboard_ix.target
                 title = (
-                    "Network name" if self.keyboard_ix.target == "ssid"
+                    "Config name" if t == "config_name"
+                    else "Network name" if t == "ssid"
                     else "Wi-Fi password"
                 )
                 return render_keyboard(main_img, self.keyboard_ix.state, title=title)
@@ -690,6 +726,27 @@ class App:
                 initial_value=initial,
             )
             self.state = AppState.PICKER
+            return
+        if action == EditAction.OPEN_NAME_KEYBOARD and self.edit_ix is not None:
+            # LEFT/RIGHT on the name row opens the keyboard seeded with
+            # the current draft name. `taken_names` excludes the draft's
+            # own name so re-confirming it unchanged is allowed.
+            draft = self.edit_ix.draft
+            taken = frozenset(c.name for c in self.configs) - {draft.name}
+            self.keyboard_ix = KeyboardInteraction(
+                target="config_name", initial=draft.name, taken_names=taken,
+            )
+            self.state = AppState.NAME_KEYBOARD
+            return
+        if action == EditAction.OPEN_GENERATOR and self.edit_ix is not None:
+            # semiauto-bracketing §5: seed the generator from the draft's
+            # first shot (manual mode) or the default reference (auto).
+            draft = self.edit_ix.draft
+            ref = draft.shots[0] if draft.shots else _DEFAULT_BRACKET_REF
+            self.bracket_ix = BracketGenInteraction(
+                reference=ref, config_name=draft.name,
+            )
+            self.state = AppState.BRACKET_GEN
             return
         if (
             action == EditAction.BACK
@@ -989,6 +1046,50 @@ class App:
         )
         self.picker_ix = None
         self.state = return_to
+
+    # -- Bracket generator dispatch (semiauto-bracketing §5) -------------
+
+    def _dispatch_bracket_accept(self) -> None:
+        """Generator OK — materialise the ladder into the edit draft.
+
+        Writes the generated `shots` tuple over the draft (making it
+        manual mode); `EditScreenInteraction.is_dirty` then reflects the
+        change so the normal edit→Save / discard overlays behave as
+        usual. The generator persists nothing itself.
+        """
+        if self.bracket_ix is None:
+            return
+        if self.edit_ix is not None:
+            new_shots = self.bracket_ix.result().shots
+            self.edit_ix.draft = replace(self.edit_ix.draft, shots=new_shots)
+        self.bracket_ix = None
+        self.state = AppState.EDIT     # cursor stays where it was
+
+    def _dispatch_bracket_cancel(self) -> None:
+        """Generator BACK — discard, return to edit with the draft intact."""
+        self.bracket_ix = None
+        self.state = AppState.EDIT
+
+    # -- Config-name keyboard dispatch -----------------------------------
+
+    def _dispatch_name_keyboard_done(self) -> None:
+        """Keyboard ✓ — write the typed name onto the edit draft.
+
+        Validation (non-empty, ≤ MAX_NAME_LENGTH, unique) already passed
+        inside the keyboard; `is_dirty` then reflects the rename so the
+        normal edit→Save / discard overlays behave as usual.
+        """
+        assert self.keyboard_ix is not None and self.edit_ix is not None
+        self.edit_ix.draft = replace(
+            self.edit_ix.draft, name=self.keyboard_ix.text,
+        )
+        self.keyboard_ix = None
+        self.state = AppState.EDIT
+
+    def _dispatch_name_keyboard_cancel(self) -> None:
+        """Keyboard BACK — discard, return to edit with the name intact."""
+        self.keyboard_ix = None
+        self.state = AppState.EDIT
 
     # -- Wi-Fi dispatch & worker (wifi-manual-config §5) -----------------
 

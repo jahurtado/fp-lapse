@@ -27,6 +27,10 @@ from fp_lapse.configs import Shot, TimelapseConfig  # noqa: E402
 from fp_lapse.engine import EngineState  # noqa: E402
 from fp_lapse.schedule.moment import ScheduledMoment  # noqa: E402
 from fp_lapse.ui.edit_screen import EditScreen, EditState  # noqa: E402
+from fp_lapse.ui.bracket_screen import (  # noqa: E402
+    BracketGenState,
+    render_bracket_gen,
+)
 from fp_lapse.ui.main_screen import MainScreen, UIState  # noqa: E402
 from fp_lapse.ui.manage_menu import ManageMenuState  # noqa: E402
 from fp_lapse.ui.manage_menu import render_manage_menu as _render_manage_menu  # noqa: E402
@@ -313,6 +317,35 @@ def render_edit():
     return EditScreen().render(state)
 
 
+def render_bracket_gen_preview():
+    """Generator screen — populated preview, no drops (PRD mockup).
+
+    Reference 1/500·ISO 400·f/8, darkest, 1 EV, 5 shots, iso1=400,
+    iso2=off → a clean ISO-400 ladder. Cursor on `iso 2`.
+    """
+    state = BracketGenState(
+        reference=Shot(1 / 500, 400, 8.0),
+        brightest=False, ev_step=1, n=5, iso1=400, iso2=None,
+        field_cursor=7, config_name="Totality",
+    )
+    return render_bracket_gen(state)
+
+
+def render_bracket_gen_dropped():
+    """Generator screen — dropped-shots state (PRD mockup).
+
+    Reference 1/1000·ISO 200·f/5.6, brightest, 3 EV, 5 shots, iso1=100,
+    iso2=off → rungs 2–4 drop (too fast even at ISO 100). Cursor on
+    `direction`.
+    """
+    state = BracketGenState(
+        reference=Shot(1 / 1000, 200, 5.6),
+        brightest=True, ev_step=3, n=5, iso1=100, iso2=None,
+        field_cursor=3, config_name="Corona",
+    )
+    return render_bracket_gen(state)
+
+
 def render_overlay_stop():
     """Confirmation overlay on top of running main screen — productive code."""
     return render_overlay(render_main_running_on_running(), stop_confirm())
@@ -544,6 +577,15 @@ def render_keyboard_ssid():
     return render_keyboard(render_main_idle(), state, title="Network name")
 
 
+def render_keyboard_config_name():
+    """Virtual keyboard, abc layer, config-name target (no mask key)."""
+    state = KeyboardState(
+        target="config_name", text="Totality", layer="abc", masked=False,
+        cursor_row=0, cursor_col=0,
+    )
+    return render_keyboard(render_main_idle(), state, title="Config name")
+
+
 def render_wifi_connecting():
     return render_wifi_status(
         render_main_idle(),
@@ -620,6 +662,11 @@ def main():
     save(render_wifi_connected(),               "25_wifi_connected")
     save(render_wifi_failed(),                  "26_wifi_failed")
     save(render_wifi_forget_confirm_mockup(),   "27_wifi_forget_confirm")
+    # semiauto-bracketing — generator sub-screen.
+    save(render_bracket_gen_preview(),          "28_bracket_gen_preview")
+    save(render_bracket_gen_dropped(),          "29_bracket_gen_dropped")
+    # Config-name on-screen keyboard.
+    save(render_keyboard_config_name(),         "30_keyboard_config_name")
     print("Done.")
 
 

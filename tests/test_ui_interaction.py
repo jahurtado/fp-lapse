@@ -429,11 +429,12 @@ class TestEditInteractionBasics(unittest.TestCase):
         self.assertEqual(self.ix.field_cursor, 0)
 
     def test_down_clamps_at_last_field(self):
-        # prd2.md §6.2: 5 header (name, interval, shots, start, end) +
-        # 3 shot params = 8 fields total → last index is 7.
+        # semiauto-bracketing §4: 6 header (name, interval, shots, start,
+        # end, generate bracket) + 3 shot params = 9 fields total → last
+        # index is 8.
         for _ in range(20):
             self.ix.on_press(ButtonId.DOWN)
-        self.assertEqual(self.ix.field_cursor, 7)
+        self.assertEqual(self.ix.field_cursor, 8)
 
     def test_ok_returns_save(self):
         self.assertEqual(self.ix.on_press(ButtonId.OK), EditAction.SAVE)
@@ -529,17 +530,17 @@ class TestEditCycling(unittest.TestCase):
         self.assertTrue(ix.draft.is_auto)
 
     def test_shutter_cycle_modifies_draft(self):
-        # prd2.md §6.2: #1 shutter is now field 5 (after the
-        # start/end pair inserted at 3/4).
-        self._move_to_field(5)
+        # semiauto-bracketing §4: #1 shutter is now field 6 (after the
+        # start/end pair at 3/4 and the generate-bracket row at 5).
+        self._move_to_field(6)
         self.ix.on_press(ButtonId.RIGHT)
         # 1/500 → next in SHUTTER_VALUES = 1/400
         self.assertNotEqual(self.ix.draft.shots[0].shutter, 1 / 500)
         self.assertTrue(self.ix.is_dirty)
 
     def test_iso_cycle_modifies_draft(self):
-        # prd2.md §6.2: #1 iso is now field 6.
-        self._move_to_field(6)
+        # semiauto-bracketing §4: #1 iso is now field 7.
+        self._move_to_field(7)
         original_iso = self.ix.draft.shots[0].iso
         self.ix.on_press(ButtonId.RIGHT)
         self.assertNotEqual(self.ix.draft.shots[0].iso, original_iso)

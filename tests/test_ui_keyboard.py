@@ -270,6 +270,55 @@ class TestCancel(unittest.TestCase):
         self.assertEqual(ix.text, "secret12")
 
 
+class TestConfigNameTarget(unittest.TestCase):
+    """Config-name editing target (semiauto-bracketing addendum)."""
+
+    def _press_done(self, ix):
+        rows = keyboard_rows(ix.target, ix.state.layer)
+        done_col = next(i for i, k in enumerate(rows[-1]) if k.kind == KeyKind.DONE)
+        _goto(ix, 3, done_col)
+        return ix.on_press(ButtonId.OK)
+
+    def test_config_name_target_accepted(self):
+        ix = KeyboardInteraction(target="config_name", initial="Hello")
+        self.assertEqual(ix.target, "config_name")
+        self.assertEqual(ix.text, "Hello")
+        self.assertFalse(ix.state.masked)
+
+    def test_config_name_special_row_has_no_mask_key(self):
+        rows = keyboard_rows("config_name", "abc")
+        kinds = [k.kind for k in rows[-1]]
+        self.assertNotIn(KeyKind.MASK, kinds)
+        self.assertEqual(len(rows[-1]), 4)
+
+    def test_overflow_past_20_sets_error_and_is_rejected(self):
+        ix = KeyboardInteraction(target="config_name", initial="x" * 20)
+        _goto(ix, 0, 0)
+        ix.on_press(ButtonId.OK)  # would be the 21st char
+        self.assertEqual(len(ix.text), 20)
+        self.assertEqual(ix.state.error, "Max 20 chars")
+
+    def test_done_on_empty_errors_no_done(self):
+        ix = KeyboardInteraction(target="config_name", initial="")
+        self.assertIsNone(self._press_done(ix))
+        self.assertEqual(ix.state.error, "1–20 chars")
+
+    def test_done_on_taken_name_errors_no_done(self):
+        ix = KeyboardInteraction(
+            target="config_name", initial="Dup",
+            taken_names=frozenset({"Dup"}),
+        )
+        self.assertIsNone(self._press_done(ix))
+        self.assertEqual(ix.state.error, "Name in use")
+
+    def test_done_on_valid_unique_name_returns_done(self):
+        ix = KeyboardInteraction(
+            target="config_name", initial="Totality",
+            taken_names=frozenset({"Other"}),
+        )
+        self.assertIs(self._press_done(ix), KeyboardAction.DONE)
+
+
 class TestRender(unittest.TestCase):
     def test_renders_320x240(self):
         ix = KeyboardInteraction(target="password")

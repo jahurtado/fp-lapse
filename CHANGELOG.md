@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-07-03
+
+Adds a **semiautomatic HDR bracket generator** — the headline tool for
+the August 12, 2026 eclipse. Instead of hand-entering up to nine
+exposures, the operator anchors one reference exposure ("expose for the
+light") and the device generates an evenly-stepped exposure ladder,
+trading ISO for shutter to minimise exposure time per frame. It ships
+with two enablers: the fp's full native 1/3-EV ISO scale is now
+selectable on-device (previously only full stops), and configuration
+names can finally be typed on the box using the on-screen keyboard.
+
+### Added
+
+- **Semiautomatic bracketing generator (`src/fp_lapse/bracket.py`,
+  `src/fp_lapse/ui/bracket_screen.py`).** A new sub-screen reached from
+  the edit screen's `generate bracket` row (opened with `←`/`→`). From a
+  reference `Shot`, a direction (the reference is the brightest or the
+  darkest shot), an EV step from `{1, 2, 2.5, 3, 3.5, 4}`, a shot count,
+  and one or two eligible ISOs, it generates the exposure ladder and
+  **materialises** it into the config's `shots` — an ordinary manual
+  bracket that stays hand-editable. Each non-reference rung picks the
+  eligible ISO that yields the **shortest in-range shutter** (aperture is
+  held constant / passthrough); rungs whose exposure leaves the
+  1/8000–30 s range are dropped, and a **live preview** shows the
+  surviving ladder plus the dropped count. The algorithm is a pure,
+  hardware-free module with the shutter grid injected (no core←ui
+  dependency).
+- **On-screen editing of configuration names.** The `name` field on the
+  edit screen now opens the on-screen keyboard (`←`/`→`), seeded with the
+  current name; `✓` commits after inline validation (non-empty, ≤ 20
+  chars, and unique — a duplicate shows `Name in use`). The keyboard
+  added for Wi-Fi in 1.4.0 gains a `config_name` target. Renaming no
+  longer requires editing `runtime/configs.json` over SSH.
+
+### Fixed
+
+- **Native 1/3-EV ISO values are now selectable (e.g. ISO 640).** The
+  edit screen's ISO cycler only offered full stops
+  (`100, 200, 400, …`), so the fp's native third-stop values
+  (`…, 500, 640, 800, …`) were unreachable from the UI. The cycler now
+  exposes the full native 1/3-EV scale `100–25600`, matching the
+  camera's ISO table exactly so every offered value sets without
+  snapping to a neighbour.
+
 ## [1.4.0] — 2026-06-30
 
 Adds **manual Wi-Fi configuration from the device itself** — no SSH, no
