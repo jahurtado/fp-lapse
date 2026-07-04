@@ -16,6 +16,11 @@ six physical buttons. Mac-side development uses Tk-based mocks for the
 display, the buttons, and the camera, so the entire UX can be exercised
 without hardware.
 
+> [!NOTE]
+> 📝 Visit the post on
+> [El Cacharrista](https://www.elcacharrista.com/a/intervalometer-raspberry-pi-eclipse/),
+> which walks through how it was built and a real-world test of it.
+
 ---
 
 ## Table of contents
